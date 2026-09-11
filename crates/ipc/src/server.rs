@@ -153,18 +153,24 @@ impl IpcServer {
         // Spawn event broadcast listener
         let broadcast_inner = inner.clone();
         let mut event_rx = broadcast_inner.event_tx.subscribe();
-        tokio::spawn(async move {
+        let broadcast_handle = tokio::spawn(async move {
             while let Ok(event) = event_rx.recv().await {
                 if let Ok(json) = serde_json::to_string(&event) {
-                    let mut clients = broadcast_inner.clients.lock().await;
+                    let client_senders: Vec<(u64, mpsc::Sender<String>)> = {
+                        let clients = broadcast_inner.clients.lock().await;
+                        clients.iter().map(|(&id, tx)| (id, tx.clone())).collect()
+                    };
                     let mut dead_clients = Vec::new();
-                    for (&id, tx) in clients.iter() {
-                        if tx.send(json.clone()).await.is_err() {
+                    for (id, tx) in client_senders {
+                        if tx.try_send(json.clone()).is_err() {
                             dead_clients.push(id);
                         }
                     }
-                    for id in dead_clients {
-                        clients.remove(&id);
+                    if !dead_clients.is_empty() {
+                        let mut clients = broadcast_inner.clients.lock().await;
+                        for id in dead_clients {
+                            clients.remove(&id);
+                        }
                     }
                 }
             }
@@ -222,6 +228,7 @@ impl IpcServer {
             }
         }
 
+        broadcast_handle.abort();
         Ok(())
     }
 }

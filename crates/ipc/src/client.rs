@@ -5,8 +5,10 @@ use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio_util::codec::{Framed, LinesCodec};
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 #[derive(Clone)]
@@ -39,42 +41,64 @@ impl IpcClient {
         let pending_responses: Arc<Mutex<HashMap<String, oneshot::Sender<IpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
+        let cancel_token = CancellationToken::new();
+
         let pending_clone = pending_responses.clone();
         let event_tx_clone = event_tx.clone();
 
         // Background writer
+        let writer_token = cancel_token.clone();
         tokio::spawn(async move {
-            while let Some(req) = req_rx.recv().await {
-                if let Ok(json) = serde_json::to_string(&req) {
-                    if sink.send(json).await.is_err() {
-                        break;
+            loop {
+                tokio::select! {
+                    _ = writer_token.cancelled() => break,
+                    msg = req_rx.recv() => {
+                        match msg {
+                            Some(req) => {
+                                if let Ok(json) = serde_json::to_string(&req) {
+                                    if sink.send(json).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            None => break,
+                        }
                     }
                 }
             }
+            writer_token.cancel();
         });
 
         // Background reader & demuxer
+        let reader_token = cancel_token.clone();
         tokio::spawn(async move {
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(line) => {
-                        if let Ok(resp) = serde_json::from_str::<IpcResponse>(&line) {
-                            let mut map = pending_clone.lock().await;
-                            if let Some(ch) = map.remove(&resp.id) {
-                                let _ = ch.send(resp);
+            loop {
+                tokio::select! {
+                    _ = reader_token.cancelled() => break,
+                    result = stream.next() => {
+                        match result {
+                            Some(Ok(line)) => {
+                                if let Ok(resp) = serde_json::from_str::<IpcResponse>(&line) {
+                                    let mut map = pending_clone.lock().await;
+                                    if let Some(ch) = map.remove(&resp.id) {
+                                        let _ = ch.send(resp);
+                                    }
+                                } else if let Ok(event) = serde_json::from_str::<IpcEvent>(&line) {
+                                    let _ = event_tx_clone.send(event);
+                                } else {
+                                    warn!("Received unrecognized IPC frame: {}", line);
+                                }
                             }
-                        } else if let Ok(event) = serde_json::from_str::<IpcEvent>(&line) {
-                            let _ = event_tx_clone.send(event);
-                        } else {
-                            warn!("Received unrecognized IPC frame: {}", line);
+                            Some(Err(e)) => {
+                                warn!("Error reading IPC frame: {:?}", e);
+                                break;
+                            }
+                            None => break,
                         }
-                    }
-                    Err(e) => {
-                        warn!("Error reading IPC frame: {:?}", e);
-                        break;
                     }
                 }
             }
+            reader_token.cancel();
             let mut map = pending_clone.lock().await;
             map.clear();
         });
@@ -87,6 +111,16 @@ impl IpcClient {
     }
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        self.call_timeout(method, params, Duration::from_secs(30))
+            .await
+    }
+
+    pub async fn call_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value> {
         let req = IpcRequest::new(method, params);
         let id = req.id.clone();
         let (resp_tx, resp_rx) = oneshot::channel();
@@ -103,8 +137,8 @@ impl IpcClient {
             return Err(Error::Other(format!("Failed to send IPC request: {}", e)));
         }
 
-        match resp_rx.await {
-            Ok(resp) => {
+        match tokio::time::timeout(timeout, resp_rx).await {
+            Ok(Ok(resp)) => {
                 if resp.ok {
                     Ok(resp.data.unwrap_or(serde_json::Value::Null))
                 } else {
@@ -113,10 +147,18 @@ impl IpcClient {
                     ))
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let mut map = self.pending_responses.lock().await;
                 map.remove(&id);
                 Err(Error::Other(format!("IPC response channel closed: {}", e)))
+            }
+            Err(_) => {
+                let mut map = self.pending_responses.lock().await;
+                map.remove(&id);
+                Err(Error::Other(format!(
+                    "IPC request timed out after {:?}",
+                    timeout
+                )))
             }
         }
     }
