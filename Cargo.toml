@@ -1,5 +1,12 @@
+[package]
+name = "easyjob"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
 [workspace]
 members = [
+    ".",
     "crates/*",
 ]
 resolver = "2"
@@ -16,3 +23,16 @@ tokio-util = "0.7.12"
 async-trait = "0.1.83"
 tracing = "0.1.40"
 sqlx = { version = "0.8.2", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate"] }
+
+[dev-dependencies]
+easyjob-common = { path = "crates/common" }
+easyjob-domain = { path = "crates/domain" }
+easyjob-executor = { path = "crates/executor" }
+easyjob-persistence = { path = "crates/persistence" }
+easyjob-platform = { path = "crates/platform" }
+easyjob-scheduler = { path = "crates/scheduler" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+
