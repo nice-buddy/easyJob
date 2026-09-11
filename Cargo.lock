@@ -312,6 +312,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "easyjob-ipc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "easyjob-common",
+ "easyjob-domain",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "easyjob-logging"
 version = "0.1.0"
 dependencies = [
