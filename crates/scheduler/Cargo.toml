@@ -1,0 +1,14 @@
+[package]
+name = "easyjob-scheduler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+easyjob-common = { path = "../common" }
+easyjob-domain = { path = "../domain" }
+chrono.workspace = true
+chrono-tz.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
