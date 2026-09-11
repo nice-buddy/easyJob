@@ -442,3 +442,175 @@ async fn test_file_db_persistence_and_wal() {
     let _ = std::fs::remove_file(format!("{}-wal", db_path.to_string_lossy()));
     let _ = std::fs::remove_file(format!("{}-shm", db_path.to_string_lossy()));
 }
+
+#[tokio::test]
+async fn test_task_preserves_disabled_triggers_actions_and_increments_version() {
+    let pool = init_pool("sqlite::memory:?cache=shared").await.unwrap();
+    let task_repo = SqliteTaskRepository::new(pool.clone());
+
+    let task_id = TaskId::new();
+    let trigger_enabled_id = TriggerId::new();
+    let trigger_disabled_id = TriggerId::new();
+    let action_enabled_id = ActionId::new();
+    let action_disabled_id = ActionId::new();
+
+    let task = Task {
+        id: task_id,
+        name: "Disabled Items Task".to_string(),
+        description: Some("Testing disabled triggers and actions".to_string()),
+        enabled: true,
+        triggers: vec![
+            Trigger {
+                id: trigger_enabled_id,
+                task_id,
+                enabled: true,
+                kind: TriggerKind::AgentStarted,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            Trigger {
+                id: trigger_disabled_id,
+                task_id,
+                enabled: false,
+                kind: TriggerKind::Once {
+                    fire_at: Utc::now(),
+                },
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        ],
+        actions: vec![
+            Action {
+                id: action_enabled_id,
+                task_id,
+                sequence: 1,
+                enabled: true,
+                kind: ActionKind::ExecuteShell {
+                    command: "echo enabled".to_string(),
+                },
+            },
+            Action {
+                id: action_disabled_id,
+                task_id,
+                sequence: 2,
+                enabled: false,
+                kind: ActionKind::ExecuteShell {
+                    command: "echo disabled".to_string(),
+                },
+            },
+        ],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+
+    // Initial save
+    task_repo.save(&task).await.unwrap();
+
+    let loaded = task_repo
+        .find_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task found");
+    assert_eq!(loaded.version, 1);
+    assert_eq!(loaded.triggers.len(), 2);
+    assert_eq!(loaded.actions.len(), 2);
+
+    let tr_enabled = loaded
+        .triggers
+        .iter()
+        .find(|t| t.id == trigger_enabled_id)
+        .unwrap();
+    assert!(tr_enabled.enabled);
+
+    let tr_disabled = loaded
+        .triggers
+        .iter()
+        .find(|t| t.id == trigger_disabled_id)
+        .unwrap();
+    assert!(!tr_disabled.enabled);
+
+    let act_enabled = loaded
+        .actions
+        .iter()
+        .find(|a| a.id == action_enabled_id)
+        .unwrap();
+    assert!(act_enabled.enabled);
+    assert_eq!(act_enabled.sequence, 1);
+
+    let act_disabled = loaded
+        .actions
+        .iter()
+        .find(|a| a.id == action_disabled_id)
+        .unwrap();
+    assert!(!act_disabled.enabled);
+    assert_eq!(act_disabled.sequence, 2);
+
+    // Repeated save 1 -> version increments to 2
+    task_repo.save(&loaded).await.unwrap();
+    let loaded_v2 = task_repo
+        .find_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task found");
+    assert_eq!(loaded_v2.version, 2);
+    assert_eq!(loaded_v2.triggers.len(), 2);
+    assert_eq!(loaded_v2.actions.len(), 2);
+
+    // Repeated save 2 -> version increments to 3
+    task_repo.save(&loaded_v2).await.unwrap();
+    let loaded_v3 = task_repo
+        .find_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task found");
+    assert_eq!(loaded_v3.version, 3);
+    assert_eq!(loaded_v3.triggers.len(), 2);
+    assert_eq!(loaded_v3.actions.len(), 2);
+
+    let tr_disabled_v3 = loaded_v3
+        .triggers
+        .iter()
+        .find(|t| t.id == trigger_disabled_id)
+        .unwrap();
+    assert!(!tr_disabled_v3.enabled);
+
+    let act_disabled_v3 = loaded_v3
+        .actions
+        .iter()
+        .find(|a| a.id == action_disabled_id)
+        .unwrap();
+    assert!(!act_disabled_v3.enabled);
+}
+
+#[tokio::test]
+async fn test_find_by_id_propagates_deserialization_errors() {
+    let pool = init_pool("sqlite::memory:?cache=shared").await.unwrap();
+    let task_repo = SqliteTaskRepository::new(pool.clone());
+    let task_id = TaskId::new();
+
+    sqlx::query(
+        "INSERT INTO tasks (id, name, description, enabled, execution_policy_json, working_directory, environment_json, version, created_at, updated_at)
+         VALUES (?, 'Corrupt Task', NULL, 1, '{}', NULL, '{}', 1, datetime('now'), datetime('now'))"
+    )
+    .bind(task_id.to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO triggers (id, task_id, kind, config_json, enabled, created_at, updated_at)
+         VALUES (?, ?, 'AgentStarted', 'invalid json', 1, datetime('now'), datetime('now'))",
+    )
+    .bind(TriggerId::new().to_string())
+    .bind(task_id.to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let res = task_repo.find_by_id(&task_id).await;
+    assert!(res.is_err());
+}

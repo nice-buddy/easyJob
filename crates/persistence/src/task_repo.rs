@@ -60,33 +60,31 @@ impl TaskRepository for SqliteTaskRepository {
             None => return Ok(None),
         };
 
-        let trigger_rows =
-            sqlx::query("SELECT config_json FROM triggers WHERE task_id = ? AND enabled = 1")
-                .bind(id.to_string())
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| Error::Database(e.to_string()))?;
-
-        let mut triggers = Vec::new();
-        for tr in trigger_rows {
-            let json: String = tr.get("config_json");
-            if let Ok(t) = serde_json::from_str::<Trigger>(&json) {
-                triggers.push(t);
-            }
-        }
-
-        let action_rows = sqlx::query("SELECT config_json FROM actions WHERE task_id = ? AND enabled = 1 ORDER BY sequence ASC")
+        let trigger_rows = sqlx::query("SELECT config_json FROM triggers WHERE task_id = ?")
             .bind(id.to_string())
             .fetch_all(&self.pool)
             .await
             .map_err(|e| Error::Database(e.to_string()))?;
 
+        let mut triggers = Vec::new();
+        for tr in trigger_rows {
+            let json: String = tr.get("config_json");
+            let t = serde_json::from_str::<Trigger>(&json)?;
+            triggers.push(t);
+        }
+
+        let action_rows =
+            sqlx::query("SELECT config_json FROM actions WHERE task_id = ? ORDER BY sequence ASC")
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+
         let mut actions = Vec::new();
         for ar in action_rows {
             let json: String = ar.get("config_json");
-            if let Ok(a) = serde_json::from_str::<Action>(&json) {
-                actions.push(a);
-            }
+            let a = serde_json::from_str::<Action>(&json)?;
+            actions.push(a);
         }
 
         let policy_json: String = row.get("execution_policy_json");
@@ -141,7 +139,7 @@ impl TaskRepository for SqliteTaskRepository {
                 execution_policy_json = excluded.execution_policy_json,
                 working_directory = excluded.working_directory,
                 environment_json = excluded.environment_json,
-                version = excluded.version + 1,
+                version = tasks.version + 1,
                 updated_at = excluded.updated_at"
         )
         .bind(task.id.to_string())
