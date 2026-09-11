@@ -5,12 +5,14 @@ use easyjob_platform::{kill_process_tree, CommandBuilder};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024; // 2MB
 pub const TRUNCATION_SUFFIX: &str = "\n... [output truncated]";
+pub const PIPE_DRAIN_TIMEOUT: Duration = Duration::from_millis(1000);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunResult {
@@ -46,32 +48,9 @@ impl ProcessRunner {
                 CommandBuilder::new_program(program, args)
             }
             ActionKind::ExecuteShell { command } => CommandBuilder::new_shell(command),
-            ActionKind::ExecuteCmd { command } => {
-                let mut c = tokio::process::Command::new("cmd.exe");
-                c.args(["/c", command]);
-                #[cfg(windows)]
-                easyjob_platform::windows::configure_windows_command(c.as_std_mut());
-                #[cfg(unix)]
-                easyjob_platform::unix::configure_unix_command(c.as_std_mut());
-                c
-            }
+            ActionKind::ExecuteCmd { command } => CommandBuilder::new_cmd(command),
             ActionKind::ExecutePowerShell { script, no_profile } => {
-                let mut c = tokio::process::Command::new("powershell.exe");
-                if *no_profile {
-                    c.arg("-NoProfile");
-                }
-                c.args([
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    script,
-                ]);
-                #[cfg(windows)]
-                easyjob_platform::windows::configure_windows_command(c.as_std_mut());
-                #[cfg(unix)]
-                easyjob_platform::unix::configure_unix_command(c.as_std_mut());
-                c
+                CommandBuilder::new_powershell(script, *no_profile)
             }
         };
 
@@ -91,8 +70,11 @@ impl ProcessRunner {
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
 
-        let stdout_handle = tokio::spawn(read_stream_capped(stdout_pipe));
-        let stderr_handle = tokio::spawn(read_stream_capped(stderr_pipe));
+        let stdout_buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stderr_buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let stdout_handle = tokio::spawn(read_stream_capped(stdout_pipe, stdout_buf.clone()));
+        let stderr_handle = tokio::spawn(read_stream_capped(stderr_pipe, stderr_buf.clone()));
 
         let wait_fut = async { child.wait().await };
         let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(86400));
@@ -103,8 +85,10 @@ impl ProcessRunner {
                     let _ = kill_process_tree(p).await;
                 }
                 let _ = child.wait().await;
-                let stdout = stdout_handle.await.unwrap_or_default();
-                let stderr = stderr_handle.await.unwrap_or_default();
+                let (stdout, stderr) = tokio::join!(
+                    collect_pipe_output(stdout_handle, stdout_buf),
+                    collect_pipe_output(stderr_handle, stderr_buf),
+                );
                 Ok(RunResult {
                     status: ExecutionStatus::Cancelled,
                     exit_code: None,
@@ -120,8 +104,10 @@ impl ProcessRunner {
                             let _ = kill_process_tree(p).await;
                         }
                         let _ = child.wait().await;
-                        let stdout = stdout_handle.await.unwrap_or_default();
-                        let stderr = stderr_handle.await.unwrap_or_default();
+                        let (stdout, stderr) = tokio::join!(
+                            collect_pipe_output(stdout_handle, stdout_buf),
+                            collect_pipe_output(stderr_handle, stderr_buf),
+                        );
                         Ok(RunResult {
                             status: ExecutionStatus::TimedOut,
                             exit_code: None,
@@ -132,8 +118,10 @@ impl ProcessRunner {
                     }
                     Ok(exit_status) => {
                         let status_code = exit_status.map_err(|e| Error::Process(e.to_string()))?.code();
-                        let stdout = stdout_handle.await.unwrap_or_default();
-                        let stderr = stderr_handle.await.unwrap_or_default();
+                        let (stdout, stderr) = tokio::join!(
+                            collect_pipe_output(stdout_handle, stdout_buf),
+                            collect_pipe_output(stderr_handle, stderr_buf),
+                        );
                         let success = status_code == Some(0);
                         Ok(RunResult {
                             status: if success { ExecutionStatus::Succeeded } else { ExecutionStatus::Failed },
@@ -149,8 +137,31 @@ impl ProcessRunner {
     }
 }
 
-async fn read_stream_capped<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> String {
-    let mut buf = Vec::new();
+async fn collect_pipe_output(
+    mut handle: tokio::task::JoinHandle<String>,
+    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+) -> String {
+    match tokio::time::timeout(PIPE_DRAIN_TIMEOUT, &mut handle).await {
+        Ok(join_res) => match join_res {
+            Ok(s) => s,
+            Err(_) => {
+                let bytes = buffer.lock().map(|b| b.clone()).unwrap_or_default();
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+        },
+        Err(_) => {
+            // Timed out waiting for pipe EOF (e.g. grandchild inherited FD)
+            handle.abort();
+            let bytes = buffer.lock().map(|b| b.clone()).unwrap_or_default();
+            String::from_utf8_lossy(&bytes).to_string()
+        }
+    }
+}
+
+async fn read_stream_capped<R: tokio::io::AsyncRead + Unpin>(
+    pipe: Option<R>,
+    output_buf: Arc<std::sync::Mutex<Vec<u8>>>,
+) -> String {
     let mut truncated = false;
     if let Some(mut pipe) = pipe {
         let mut chunk = [0u8; 4096];
@@ -161,15 +172,18 @@ async fn read_stream_capped<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) ->
             if truncated {
                 continue;
             }
-            if buf.len() + n <= MAX_OUTPUT_BYTES {
-                buf.extend_from_slice(&chunk[..n]);
-            } else {
-                let rem = MAX_OUTPUT_BYTES.saturating_sub(buf.len());
-                buf.extend_from_slice(&chunk[..rem]);
-                buf.extend_from_slice(TRUNCATION_SUFFIX.as_bytes());
-                truncated = true;
+            if let Ok(mut buf) = output_buf.lock() {
+                if buf.len() + n <= MAX_OUTPUT_BYTES {
+                    buf.extend_from_slice(&chunk[..n]);
+                } else {
+                    let rem = MAX_OUTPUT_BYTES.saturating_sub(buf.len());
+                    buf.extend_from_slice(&chunk[..rem]);
+                    buf.extend_from_slice(TRUNCATION_SUFFIX.as_bytes());
+                    truncated = true;
+                }
             }
         }
     }
+    let buf = output_buf.lock().map(|b| b.clone()).unwrap_or_default();
     String::from_utf8_lossy(&buf).to_string()
 }

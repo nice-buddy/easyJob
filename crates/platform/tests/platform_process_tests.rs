@@ -21,6 +21,12 @@ async fn test_spawn_program() {
     }
 }
 
+#[test]
+fn test_command_builder_new_cmd_and_powershell() {
+    let _cmd = CommandBuilder::new_cmd("echo hello");
+    let _ps = CommandBuilder::new_powershell("Write-Output hello", true);
+}
+
 #[tokio::test]
 async fn test_kill_process_tree_invalid_pid() {
     let res0 = easyjob_platform::kill_process_tree(0).await;

@@ -3,6 +3,7 @@ use crate::queue::{ScheduleQueue, ScheduledItem};
 use chrono::{DateTime, Utc};
 use easyjob_common::{TaskId, TriggerId};
 use easyjob_domain::task::Task;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -65,6 +66,7 @@ impl Scheduler {
         mut cmd_rx: Receiver<SchedulerCommand>,
         event_tx: Sender<TriggerEvent>,
     ) {
+        let mut registered_tasks: HashMap<TaskId, Box<Task>> = HashMap::new();
         let mut jump_interval = tokio::time::interval(Duration::from_secs(10));
         jump_interval.reset();
         let mut last_instant = Instant::now();
@@ -112,8 +114,10 @@ impl Scheduler {
                                     }
                                 }
                             }
+                            registered_tasks.insert(task.id, task);
                         }
                         Some(SchedulerCommand::RemoveTask(id)) => {
+                            registered_tasks.remove(&id);
                             let mut q = queue.lock().await;
                             q.bump_generation(&id);
                         }
@@ -129,6 +133,24 @@ impl Scheduler {
                 _ = tokio::time::sleep(sleep_duration), if next_deadline.is_some() => {
                     let mut q = queue.lock().await;
                     if let Some(item) = q.pop() {
+                        if let Some(task) = registered_tasks.get(&item.task_id) {
+                            let current_gen = q.current_generation(&task.id);
+                            if task.enabled && item.generation == current_gen {
+                                if let Some(trigger) = task.triggers.iter().find(|t| t.id == item.trigger_id) {
+                                    if trigger.enabled {
+                                        if let Some(next_fire) = evaluate_next_occurrence(&trigger.kind, Utc::now()) {
+                                            q.push(ScheduledItem {
+                                                task_id: task.id,
+                                                trigger_id: trigger.id,
+                                                next_fire_at: next_fire,
+                                                generation: current_gen,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        drop(q);
                         let _ = event_tx.send(TriggerEvent {
                             task_id: item.task_id,
                             trigger_id: Some(item.trigger_id),
@@ -142,9 +164,29 @@ impl Scheduler {
                     let drift = (wall_elapsed - mono_elapsed).abs();
                     if drift > 30 {
                         warn!(
-                            "System clock jump detected (drift: {}s, wall_elapsed: {}s, mono_elapsed: {}s); scheduler queue recheck warranted",
+                            "System clock jump detected (drift: {}s, wall_elapsed: {}s, mono_elapsed: {}s); rebuilding scheduler queue",
                             drift, wall_elapsed, mono_elapsed
                         );
+                        let mut q = queue.lock().await;
+                        q.clear();
+                        let now = Utc::now();
+                        for task in registered_tasks.values() {
+                            if task.enabled {
+                                let gen = q.current_generation(&task.id);
+                                for tr in &task.triggers {
+                                    if tr.enabled {
+                                        if let Some(next) = evaluate_next_occurrence(&tr.kind, now) {
+                                            q.push(ScheduledItem {
+                                                task_id: task.id,
+                                                trigger_id: tr.id,
+                                                next_fire_at: next,
+                                                generation: gen,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     last_wall = Utc::now();
                     last_instant = Instant::now();

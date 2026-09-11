@@ -32,6 +32,35 @@ impl CommandBuilder {
         }
     }
 
+    pub fn new_cmd(command: &str) -> Command {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/c", command]);
+        #[cfg(windows)]
+        crate::windows::configure_windows_command(cmd.as_std_mut());
+        #[cfg(unix)]
+        crate::unix::configure_unix_command(cmd.as_std_mut());
+        cmd
+    }
+
+    pub fn new_powershell(script: &str, no_profile: bool) -> Command {
+        let mut cmd = Command::new("powershell.exe");
+        if no_profile {
+            cmd.arg("-NoProfile");
+        }
+        cmd.args([
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ]);
+        #[cfg(windows)]
+        crate::windows::configure_windows_command(cmd.as_std_mut());
+        #[cfg(unix)]
+        crate::unix::configure_unix_command(cmd.as_std_mut());
+        cmd
+    }
+
     pub fn new_program(program: &str, args: &[String]) -> Command {
         let mut cmd = Command::new(program);
         cmd.args(args);

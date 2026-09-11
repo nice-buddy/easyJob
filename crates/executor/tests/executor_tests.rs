@@ -325,3 +325,33 @@ async fn test_process_runner_execute_program() {
     assert_eq!(res.exit_code, Some(0));
     assert!(res.stdout.contains("program test arg"));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_process_runner_grandchild_pipe_drain_timeout() {
+    let action = Action {
+        id: ActionId::new(),
+        task_id: TaskId::new(),
+        sequence: 1,
+        enabled: true,
+        kind: ActionKind::ExecuteShell {
+            command: "echo 'parent finished' && (sleep 5 &)".to_string(),
+        },
+    };
+
+    let start = std::time::Instant::now();
+    let cancel = CancellationToken::new();
+    let res = ProcessRunner::run_action(&action, None, &Default::default(), Some(10), cancel)
+        .await
+        .unwrap();
+
+    let elapsed = start.elapsed();
+    assert_eq!(res.status, ExecutionStatus::Succeeded);
+    assert!(res.stdout.contains("parent finished"));
+    // Subprocess finished, grandchild held pipe open; should finish within ~1.5s rather than 5s
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "Expected pipe drain to timeout around 1s, but took {:?}",
+        elapsed
+    );
+}

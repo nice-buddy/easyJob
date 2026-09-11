@@ -174,7 +174,9 @@ fn test_scheduler_command_add_task_boxed() {
         id: TriggerId::new(),
         task_id,
         enabled: true,
-        kind: TriggerKind::Once { fire_at: Utc::now() },
+        kind: TriggerKind::Once {
+            fire_at: Utc::now(),
+        },
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -233,10 +235,11 @@ async fn test_scheduler_trigger_now() {
         .await
         .unwrap();
 
-    let event: TriggerEvent = tokio::time::timeout(std::time::Duration::from_millis(500), event_rx.recv())
-        .await
-        .expect("timed out waiting for event")
-        .expect("event received");
+    let event: TriggerEvent =
+        tokio::time::timeout(std::time::Duration::from_millis(500), event_rx.recv())
+            .await
+            .expect("timed out waiting for event")
+            .expect("event received");
 
     assert_eq!(event.task_id, task_id);
     assert_eq!(event.trigger_id, None);
@@ -279,10 +282,11 @@ async fn test_scheduler_add_task_and_fire_trigger() {
         .await
         .unwrap();
 
-    let event: TriggerEvent = tokio::time::timeout(std::time::Duration::from_millis(1500), event_rx.recv())
-        .await
-        .expect("timed out waiting for scheduled event")
-        .expect("event received");
+    let event: TriggerEvent =
+        tokio::time::timeout(std::time::Duration::from_millis(1500), event_rx.recv())
+            .await
+            .expect("timed out waiting for scheduled event")
+            .expect("event received");
 
     assert_eq!(event.task_id, task_id);
     assert_eq!(event.trigger_id, Some(trigger_id));
@@ -334,7 +338,11 @@ async fn test_scheduler_remove_task_cancels_future_trigger() {
 
     // Wait 400ms - no event should be dispatched
     let res = tokio::time::timeout(std::time::Duration::from_millis(400), event_rx.recv()).await;
-    assert!(res.is_err(), "Expected timeout, but received event: {:?}", res);
+    assert!(
+        res.is_err(),
+        "Expected timeout, but received event: {:?}",
+        res
+    );
 
     scheduler
         .sender()
@@ -393,7 +401,11 @@ async fn test_scheduler_disabled_task_and_trigger_ignored() {
 
     // No events should be dispatched
     let res = tokio::time::timeout(std::time::Duration::from_millis(200), event_rx.recv()).await;
-    assert!(res.is_err(), "Expected timeout, but received event: {:?}", res);
+    assert!(
+        res.is_err(),
+        "Expected timeout, but received event: {:?}",
+        res
+    );
 
     scheduler
         .sender()
@@ -458,10 +470,11 @@ async fn test_scheduler_update_task_invalidates_earlier_trigger() {
         .unwrap();
 
     // Receive first event - it should be trigger2, NOT trigger1!
-    let event: TriggerEvent = tokio::time::timeout(std::time::Duration::from_millis(600), event_rx.recv())
-        .await
-        .expect("timed out waiting for scheduled event")
-        .expect("event received");
+    let event: TriggerEvent =
+        tokio::time::timeout(std::time::Duration::from_millis(600), event_rx.recv())
+            .await
+            .expect("timed out waiting for scheduled event")
+            .expect("event received");
 
     assert_eq!(event.task_id, task_id);
     assert_eq!(event.trigger_id, Some(trigger2_id));
@@ -487,5 +500,69 @@ async fn test_scheduler_loop_exits_on_sender_drop() {
 
     // Loop should detect cmd_rx.recv() == None and exit
     let res = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
-    assert!(res.is_ok(), "Scheduler loop did not terminate after sender drop");
+    assert!(
+        res.is_ok(),
+        "Scheduler loop did not terminate after sender drop"
+    );
+}
+
+#[tokio::test]
+async fn test_scheduler_interval_trigger_reschedules_multiple_events() {
+    let (event_tx, mut event_rx) = mpsc::channel(10);
+    let (scheduler, cmd_rx) = Scheduler::new(event_tx.clone());
+
+    let queue = scheduler.queue();
+    let handle = tokio::spawn(Scheduler::run(queue, cmd_rx, event_tx));
+
+    let task_id = TaskId::new();
+    let trigger_id = TriggerId::new();
+
+    // 1-second interval trigger starting almost 1 second ago so 1st event is immediate
+    let trigger = Trigger {
+        id: trigger_id,
+        task_id,
+        enabled: true,
+        kind: TriggerKind::Interval {
+            interval_secs: 1,
+            start_at: Some(Utc::now() - Duration::milliseconds(950)),
+        },
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+
+    let task = sample_task(task_id, trigger);
+
+    scheduler
+        .sender()
+        .send(SchedulerCommand::add_task(task))
+        .await
+        .unwrap();
+
+    // 1st event should fire almost immediately (~50ms)
+    let event1: TriggerEvent =
+        tokio::time::timeout(std::time::Duration::from_millis(1500), event_rx.recv())
+            .await
+            .expect("timed out waiting for 1st event")
+            .expect("1st event received");
+
+    assert_eq!(event1.task_id, task_id);
+    assert_eq!(event1.trigger_id, Some(trigger_id));
+
+    // 2nd event should automatically fire ~1000ms later due to recurring rescheduling
+    let event2: TriggerEvent =
+        tokio::time::timeout(std::time::Duration::from_millis(2500), event_rx.recv())
+            .await
+            .expect("timed out waiting for 2nd rescheduled event")
+            .expect("2nd event received");
+
+    assert_eq!(event2.task_id, task_id);
+    assert_eq!(event2.trigger_id, Some(trigger_id));
+
+    // Clean shutdown
+    scheduler
+        .sender()
+        .send(SchedulerCommand::Shutdown)
+        .await
+        .unwrap();
+    handle.await.unwrap();
 }
