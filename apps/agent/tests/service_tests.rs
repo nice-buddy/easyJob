@@ -169,3 +169,28 @@ async fn test_agent_service_lifecycle_and_rpc() {
     assert!(join_res.is_ok(), "Service did not shut down within timeout");
     assert!(join_res.unwrap().is_ok(), "Service task failed");
 }
+
+#[tokio::test]
+async fn test_agent_service_global_concurrency_limit() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("concurrency_test.db");
+    let socket_path = dir.path().join("concurrency_test.sock");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+
+    // Initialize with max_concurrent = 1
+    let service = AgentService::init(&db_url, &socket_path, 1)
+        .await
+        .expect("AgentService::init failed");
+
+    let global_limiter = service.execution_manager().global_semaphore();
+    assert_eq!(global_limiter.available_permits(), 1);
+
+    let service_handle = tokio::spawn(service.run());
+    let client = IpcClient::connect(&socket_path)
+        .await
+        .expect("IpcClient::connect failed");
+
+    // Shut down cleanly
+    let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
+}

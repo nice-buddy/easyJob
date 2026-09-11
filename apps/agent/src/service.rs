@@ -45,6 +45,15 @@ impl AgentService {
         let (scheduler, scheduler_cmd_rx) = Scheduler::new(event_tx);
         let scheduler_tx = scheduler.sender();
 
+        // Spawn scheduler loop first before loading tasks to avoid bounded channel deadlock
+        let sched_queue = scheduler.queue();
+        let sched_event_tx = scheduler.event_sender();
+        let scheduler_handle = tokio::spawn(Scheduler::run(
+            sched_queue,
+            scheduler_cmd_rx,
+            sched_event_tx,
+        ));
+
         // Load tasks into scheduler
         let enabled_tasks = task_repo.find_all_enabled().await?;
         for task in enabled_tasks {
@@ -61,15 +70,6 @@ impl AgentService {
                     .await;
             }
         }
-
-        // Spawn scheduler loop
-        let sched_queue = scheduler.queue();
-        let sched_event_tx = scheduler.event_sender();
-        let scheduler_handle = tokio::spawn(Scheduler::run(
-            sched_queue,
-            scheduler_cmd_rx,
-            sched_event_tx,
-        ));
 
         let shutdown_notify = Arc::new(Notify::new());
         let start_time = Instant::now();
@@ -126,6 +126,7 @@ impl AgentService {
         let exec_manager = self.exec_manager.clone();
         let cancel_token = CancellationToken::new();
         let dispatcher_cancel = cancel_token.clone();
+        let exec_cancel_token = cancel_token.clone();
 
         // Spawn trigger event listener & execution dispatcher
         let dispatcher_handle = tokio::spawn(async move {
@@ -143,18 +144,32 @@ impl AgentService {
                             _ => continue,
                         };
 
+                        let permit = match exec_manager.global_semaphore().try_acquire_owned() {
+                            Ok(p) => p,
+                            Err(_) => {
+                                tracing::warn!(
+                                    "Global concurrency limit reached, skipping execution for task {}",
+                                    task.id
+                                );
+                                continue;
+                            }
+                        };
+
                         let acquired = exec_manager
                             .try_acquire_slot(&task.id, task.execution_policy.concurrency_policy)
                             .await;
                         if !acquired {
+                            drop(permit);
                             continue;
                         }
 
                         let e_repo = exec_repo.clone();
                         let e_manager = exec_manager.clone();
                         let ev_tx = event_tx.clone();
+                        let action_cancel = exec_cancel_token.child_token();
 
                         tokio::spawn(async move {
+                            let _permit = permit;
                             let mut exec = Execution::new(
                                 task.id,
                                 trigger_event.trigger_id,
@@ -176,7 +191,6 @@ impl AgentService {
                                 }),
                             ));
 
-                            let action_cancel = CancellationToken::new();
                             let mut final_status = ExecutionStatus::Succeeded;
                             let mut exit_code = Some(0);
                             let mut error_message = None;
@@ -285,6 +299,14 @@ impl AgentService {
 
         cancel_token.cancel();
         let _ = dispatcher_handle.await;
+
+        // Await in-flight executions to finish with timeout
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while self.exec_manager.total_running_count().await > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
 
         let _ = self.scheduler_tx.send(SchedulerCommand::Shutdown).await;
         let _ = self.scheduler_handle.await;
