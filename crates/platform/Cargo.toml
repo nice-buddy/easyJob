@@ -6,8 +6,6 @@ edition = "2021"
 [dependencies]
 easyjob-common = { path = "../common" }
 tokio.workspace = true
-tracing.workspace = true
-async-trait.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.158"

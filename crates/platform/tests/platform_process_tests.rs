@@ -30,12 +30,20 @@ async fn test_kill_process_tree_invalid_pid() {
     {
         let res1 = easyjob_platform::kill_process_tree(1).await;
         assert!(res1.is_err());
+
+        let res_overflow = easyjob_platform::kill_process_tree(u32::MAX).await;
+        assert!(res_overflow.is_err());
     }
 }
 
 #[tokio::test]
 async fn test_kill_process_tree() {
-    let mut cmd = CommandBuilder::new_shell("sleep 30");
+    #[cfg(unix)]
+    let shell_cmd = "sleep 30";
+    #[cfg(windows)]
+    let shell_cmd = "ping -n 30 127.0.0.1 >nul";
+
+    let mut cmd = CommandBuilder::new_shell(shell_cmd);
     let mut child = cmd.spawn().expect("failed to spawn child");
     let pid = child.id().expect("child should have a pid");
 

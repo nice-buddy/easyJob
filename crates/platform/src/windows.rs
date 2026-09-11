@@ -2,9 +2,8 @@
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use std::process::Command as StdCommand;
-
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 #[cfg(windows)]
 pub fn configure_windows_command(cmd: &mut StdCommand) {
@@ -19,9 +18,9 @@ pub async fn kill_windows_process_tree(pid: u32) -> easyjob_common::Result<()> {
         ));
     }
     // taskkill /F /T /PID <pid>
-    let _ = tokio::process::Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .output()
-        .await;
+    let mut cmd = tokio::process::Command::new("taskkill");
+    cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+    configure_windows_command(cmd.as_std_mut());
+    let _ = cmd.output().await;
     Ok(())
 }

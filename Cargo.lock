@@ -120,11 +120,9 @@ dependencies = [
 name = "easyjob-platform"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "easyjob-common",
  "libc",
  "tokio",
- "tracing",
  "windows-sys 0.59.0",
 ]
 

@@ -16,7 +16,7 @@ pub fn configure_unix_command(cmd: &mut StdCommand) {
 
 #[cfg(unix)]
 pub async fn kill_unix_process_tree(pid: u32) -> easyjob_common::Result<()> {
-    if pid <= 1 {
+    if pid <= 1 || pid > i32::MAX as u32 {
         return Err(easyjob_common::Error::Process(format!(
             "Refusing to kill system or invalid process with PID {pid}"
         )));
