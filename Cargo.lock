@@ -117,6 +117,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "easyjob-executor"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "easyjob-common",
+ "easyjob-domain",
+ "easyjob-platform",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "easyjob-platform"
 version = "0.1.0"
 dependencies = [
