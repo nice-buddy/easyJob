@@ -79,6 +79,11 @@ impl ExecutionManager {
         counts.get(task_id).copied().unwrap_or(0)
     }
 
+    pub async fn total_running_count(&self) -> usize {
+        let counts = self.task_running_counts.lock().await;
+        counts.values().sum()
+    }
+
     pub fn global_semaphore(&self) -> Arc<Semaphore> {
         self.global_limiter.clone()
     }
