@@ -69,7 +69,7 @@ async fn test_file_db_wal_mode_and_foreign_keys_and_cascade() {
 
     sqlx::query(
         "INSERT INTO triggers (id, task_id, kind, config_json, enabled, created_at, updated_at)
-         VALUES ('tr-1', 't-1', 'Manual', '{}', 1, '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z')"
+         VALUES ('tr-1', 't-1', 'Manual', '{}', 1, '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z')",
     )
     .execute(&pool)
     .await
@@ -77,7 +77,7 @@ async fn test_file_db_wal_mode_and_foreign_keys_and_cascade() {
 
     sqlx::query(
         "INSERT INTO actions (id, task_id, sequence, kind, config_json, enabled)
-         VALUES ('act-1', 't-1', 0, 'Command', '{\"program\":\"echo\"}', 1)"
+         VALUES ('act-1', 't-1', 0, 'Command', '{\"program\":\"echo\"}', 1)",
     )
     .execute(&pool)
     .await
@@ -93,23 +93,25 @@ async fn test_file_db_wal_mode_and_foreign_keys_and_cascade() {
 
     sqlx::query(
         "INSERT INTO run_outputs (run_id, stream, content, created_at)
-         VALUES ('run-1', 'stdout', 'hello world', '2026-09-11T00:00:01Z')"
+         VALUES ('run-1', 'stdout', 'hello world', '2026-09-11T00:00:01Z')",
     )
     .execute(&pool)
     .await
     .unwrap();
 
     // Verify rows exist before delete
-    let trigger_count: (i64,) = sqlx::query_as("SELECT count(*) FROM triggers WHERE task_id = 't-1'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let trigger_count: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM triggers WHERE task_id = 't-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(trigger_count.0, 1);
 
-    let output_count: (i64,) = sqlx::query_as("SELECT count(*) FROM run_outputs WHERE run_id = 'run-1'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let output_count: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM run_outputs WHERE run_id = 'run-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(output_count.0, 1);
 
     // Delete task and verify cascades
@@ -118,28 +120,32 @@ async fn test_file_db_wal_mode_and_foreign_keys_and_cascade() {
         .await
         .unwrap();
 
-    let trigger_count_after: (i64,) = sqlx::query_as("SELECT count(*) FROM triggers WHERE task_id = 't-1'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let trigger_count_after: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM triggers WHERE task_id = 't-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(trigger_count_after.0, 0);
 
-    let action_count_after: (i64,) = sqlx::query_as("SELECT count(*) FROM actions WHERE task_id = 't-1'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let action_count_after: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM actions WHERE task_id = 't-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(action_count_after.0, 0);
 
-    let run_count_after: (i64,) = sqlx::query_as("SELECT count(*) FROM task_runs WHERE task_id = 't-1'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let run_count_after: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM task_runs WHERE task_id = 't-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(run_count_after.0, 0);
 
-    let output_count_after: (i64,) = sqlx::query_as("SELECT count(*) FROM run_outputs WHERE run_id = 'run-1'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let output_count_after: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM run_outputs WHERE run_id = 'run-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(output_count_after.0, 0);
 
     // Clean up temporary database files
@@ -163,17 +169,19 @@ async fn test_agent_state_and_settings_tables() {
         .await
         .unwrap();
 
-    let state_row: (String, String) = sqlx::query_as("SELECT key, value_json FROM agent_state WHERE key = 'version'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let state_row: (String, String) =
+        sqlx::query_as("SELECT key, value_json FROM agent_state WHERE key = 'version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(state_row.0, "version");
     assert_eq!(state_row.1, "\"1.0.0\"");
 
-    let setting_row: (String, String) = sqlx::query_as("SELECT key, value_json FROM settings WHERE key = 'theme'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let setting_row: (String, String) =
+        sqlx::query_as("SELECT key, value_json FROM settings WHERE key = 'theme'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(setting_row.0, "theme");
     assert_eq!(setting_row.1, "\"dark\"");
 }
