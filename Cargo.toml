@@ -31,6 +31,7 @@ easyjob-executor = { path = "crates/executor" }
 easyjob-persistence = { path = "crates/persistence" }
 easyjob-platform = { path = "crates/platform" }
 easyjob-scheduler = { path = "crates/scheduler" }
+easyjob-logging = { path = "crates/logging" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 chrono = { workspace = true }
