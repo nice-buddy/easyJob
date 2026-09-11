@@ -4,18 +4,23 @@ use chrono::{DateTime, Utc};
 use easyjob_common::{TaskId, TriggerId};
 use easyjob_domain::task::Task;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum SchedulerCommand {
-    AddTask(Task),
+    AddTask(Box<Task>),
     RemoveTask(TaskId),
     TriggerNow(TaskId),
     Shutdown,
+}
+
+impl SchedulerCommand {
+    pub fn add_task(task: Task) -> Self {
+        Self::AddTask(Box::new(task))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +65,10 @@ impl Scheduler {
         mut cmd_rx: Receiver<SchedulerCommand>,
         event_tx: Sender<TriggerEvent>,
     ) {
-        let mut last_wall_clock = Utc::now();
+        let mut jump_interval = tokio::time::interval(Duration::from_secs(10));
+        jump_interval.reset();
+        let mut last_instant = Instant::now();
+        let mut last_wall = Utc::now();
 
         loop {
             let next_deadline = {
@@ -128,14 +136,18 @@ impl Scheduler {
                         }).await;
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                    // Wall clock jump detector
-                    let now = Utc::now();
-                    let diff = (now - last_wall_clock).num_seconds();
-                    last_wall_clock = now;
-                    if diff.abs() > 30 {
-                        warn!("System clock jump detected ({}s); scheduler queue recheck warranted", diff);
+                _ = jump_interval.tick() => {
+                    let wall_elapsed = (Utc::now() - last_wall).num_seconds();
+                    let mono_elapsed = last_instant.elapsed().as_secs() as i64;
+                    let drift = (wall_elapsed - mono_elapsed).abs();
+                    if drift > 30 {
+                        warn!(
+                            "System clock jump detected (drift: {}s, wall_elapsed: {}s, mono_elapsed: {}s); scheduler queue recheck warranted",
+                            drift, wall_elapsed, mono_elapsed
+                        );
                     }
+                    last_wall = Utc::now();
+                    last_instant = Instant::now();
                 }
             }
         }

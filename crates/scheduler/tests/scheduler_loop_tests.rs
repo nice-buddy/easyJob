@@ -136,6 +136,58 @@ fn test_scheduled_item_ordering_tie_breaker() {
     assert_eq!(second.task_id, item1.task_id);
 }
 
+#[test]
+fn test_scheduled_item_ord_consistency_with_generation_and_eq() {
+    let now = Utc::now();
+    let task_id = TaskId::new();
+    let trigger_id = TriggerId::new();
+
+    let item_gen1 = ScheduledItem {
+        task_id,
+        trigger_id,
+        next_fire_at: now,
+        generation: 1,
+    };
+    let item_gen2 = ScheduledItem {
+        task_id,
+        trigger_id,
+        next_fire_at: now,
+        generation: 2,
+    };
+    let item_gen1_clone = item_gen1.clone();
+
+    // Ord vs Eq consistency:
+    // When items are equal, cmp returns Ordering::Equal
+    assert_eq!(item_gen1, item_gen1_clone);
+    assert_eq!(item_gen1.cmp(&item_gen1_clone), std::cmp::Ordering::Equal);
+
+    // When generations differ, Ord distinguishes them
+    assert_ne!(item_gen1, item_gen2);
+    assert_eq!(item_gen1.cmp(&item_gen2), std::cmp::Ordering::Less);
+    assert_eq!(item_gen2.cmp(&item_gen1), std::cmp::Ordering::Greater);
+}
+
+#[test]
+fn test_scheduler_command_add_task_boxed() {
+    let task_id = TaskId::new();
+    let trigger = Trigger {
+        id: TriggerId::new(),
+        task_id,
+        enabled: true,
+        kind: TriggerKind::Once { fire_at: Utc::now() },
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    let task = sample_task(task_id, trigger);
+    let cmd = SchedulerCommand::add_task(task);
+    match cmd {
+        SchedulerCommand::AddTask(boxed) => {
+            assert_eq!(boxed.id, task_id);
+        }
+        _ => panic!("Expected SchedulerCommand::AddTask"),
+    }
+}
+
 fn sample_task(task_id: TaskId, trigger: Trigger) -> Task {
     Task {
         id: task_id,
@@ -223,7 +275,7 @@ async fn test_scheduler_add_task_and_fire_trigger() {
 
     scheduler
         .sender()
-        .send(SchedulerCommand::AddTask(task))
+        .send(SchedulerCommand::add_task(task))
         .await
         .unwrap();
 
@@ -270,7 +322,7 @@ async fn test_scheduler_remove_task_cancels_future_trigger() {
     // Add then immediately remove task
     scheduler
         .sender()
-        .send(SchedulerCommand::AddTask(task))
+        .send(SchedulerCommand::AddTask(Box::new(task)))
         .await
         .unwrap();
 
@@ -316,7 +368,7 @@ async fn test_scheduler_disabled_task_and_trigger_ignored() {
 
     scheduler
         .sender()
-        .send(SchedulerCommand::AddTask(task))
+        .send(SchedulerCommand::add_task(task))
         .await
         .unwrap();
 
@@ -335,7 +387,7 @@ async fn test_scheduler_disabled_task_and_trigger_ignored() {
 
     scheduler
         .sender()
-        .send(SchedulerCommand::AddTask(task2))
+        .send(SchedulerCommand::add_task(task2))
         .await
         .unwrap();
 
@@ -380,7 +432,7 @@ async fn test_scheduler_update_task_invalidates_earlier_trigger() {
 
     scheduler
         .sender()
-        .send(SchedulerCommand::AddTask(task_v1))
+        .send(SchedulerCommand::AddTask(Box::new(task_v1)))
         .await
         .unwrap();
 
@@ -401,7 +453,7 @@ async fn test_scheduler_update_task_invalidates_earlier_trigger() {
 
     scheduler
         .sender()
-        .send(SchedulerCommand::AddTask(task_v2))
+        .send(SchedulerCommand::AddTask(Box::new(task_v2)))
         .await
         .unwrap();
 

@@ -19,6 +19,7 @@ impl Ord for ScheduledItem {
             .cmp(&self.next_fire_at)
             .then_with(|| self.task_id.cmp(&other.task_id))
             .then_with(|| self.trigger_id.cmp(&other.trigger_id))
+            .then_with(|| self.generation.cmp(&other.generation))
     }
 }
 

@@ -5,3 +5,4 @@ pub mod scheduler;
 pub use evaluator::{evaluate_next_occurrence, TriggerEvaluator};
 pub use queue::{ScheduleQueue, ScheduledItem};
 pub use scheduler::{Scheduler, SchedulerCommand, TriggerEvent};
+pub use easyjob_domain::task::Task;
