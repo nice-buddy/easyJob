@@ -1,0 +1,25 @@
+[package]
+name = "easyjob-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+easyjob-common = { path = "../../crates/common" }
+easyjob-domain = { path = "../../crates/domain" }
+easyjob-platform = { path = "../../crates/platform" }
+easyjob-executor = { path = "../../crates/executor" }
+easyjob-scheduler = { path = "../../crates/scheduler" }
+easyjob-persistence = { path = "../../crates/persistence" }
+easyjob-ipc = { path = "../../crates/ipc" }
+easyjob-logging = { path = "../../crates/logging" }
+fs2 = "0.4.3"
+clap = { version = "4.5.18", features = ["derive"] }
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
