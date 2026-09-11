@@ -1,0 +1,143 @@
+use crate::evaluator::evaluate_next_occurrence;
+use crate::queue::{ScheduleQueue, ScheduledItem};
+use chrono::{DateTime, Utc};
+use easyjob_common::{TaskId, TriggerId};
+use easyjob_domain::task::Task;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::Mutex;
+use tracing::{info, warn};
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum SchedulerCommand {
+    AddTask(Task),
+    RemoveTask(TaskId),
+    TriggerNow(TaskId),
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerEvent {
+    pub task_id: TaskId,
+    pub trigger_id: Option<TriggerId>,
+    pub scheduled_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub struct Scheduler {
+    queue: Arc<Mutex<ScheduleQueue>>,
+    cmd_tx: Sender<SchedulerCommand>,
+    event_tx: Sender<TriggerEvent>,
+}
+
+impl Scheduler {
+    pub fn new(event_tx: Sender<TriggerEvent>) -> (Self, Receiver<SchedulerCommand>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel(100);
+        let scheduler = Self {
+            queue: Arc::new(Mutex::new(ScheduleQueue::new())),
+            cmd_tx,
+            event_tx,
+        };
+        (scheduler, cmd_rx)
+    }
+
+    pub fn sender(&self) -> Sender<SchedulerCommand> {
+        self.cmd_tx.clone()
+    }
+
+    pub fn queue(&self) -> Arc<Mutex<ScheduleQueue>> {
+        self.queue.clone()
+    }
+
+    pub fn event_sender(&self) -> Sender<TriggerEvent> {
+        self.event_tx.clone()
+    }
+
+    pub async fn run(
+        queue: Arc<Mutex<ScheduleQueue>>,
+        mut cmd_rx: Receiver<SchedulerCommand>,
+        event_tx: Sender<TriggerEvent>,
+    ) {
+        let mut last_wall_clock = Utc::now();
+
+        loop {
+            let next_deadline = {
+                let mut q = queue.lock().await;
+                q.peek_valid().cloned()
+            };
+
+            let sleep_duration = match &next_deadline {
+                Some(item) => {
+                    let now = Utc::now();
+                    if item.next_fire_at <= now {
+                        Duration::ZERO
+                    } else {
+                        (item.next_fire_at - now).to_std().unwrap_or(Duration::ZERO)
+                    }
+                }
+                None => Duration::from_secs(3600), // Idle wait if queue empty
+            };
+
+            tokio::select! {
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        Some(SchedulerCommand::Shutdown) | None => {
+                            info!("Scheduler loop stopping");
+                            break;
+                        }
+                        Some(SchedulerCommand::AddTask(task)) => {
+                            let mut q = queue.lock().await;
+                            let gen = q.bump_generation(&task.id);
+                            if task.enabled {
+                                for tr in &task.triggers {
+                                    if tr.enabled {
+                                        if let Some(next) = evaluate_next_occurrence(&tr.kind, Utc::now()) {
+                                            q.push(ScheduledItem {
+                                                task_id: task.id,
+                                                trigger_id: tr.id,
+                                                next_fire_at: next,
+                                                generation: gen,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Some(SchedulerCommand::RemoveTask(id)) => {
+                            let mut q = queue.lock().await;
+                            q.bump_generation(&id);
+                        }
+                        Some(SchedulerCommand::TriggerNow(id)) => {
+                            let _ = event_tx.send(TriggerEvent {
+                                task_id: id,
+                                trigger_id: None,
+                                scheduled_at: Utc::now(),
+                            }).await;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(sleep_duration), if next_deadline.is_some() => {
+                    let mut q = queue.lock().await;
+                    if let Some(item) = q.pop() {
+                        let _ = event_tx.send(TriggerEvent {
+                            task_id: item.task_id,
+                            trigger_id: Some(item.trigger_id),
+                            scheduled_at: item.next_fire_at,
+                        }).await;
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                    // Wall clock jump detector
+                    let now = Utc::now();
+                    let diff = (now - last_wall_clock).num_seconds();
+                    last_wall_clock = now;
+                    if diff.abs() > 30 {
+                        warn!("System clock jump detected ({}s); scheduler queue recheck warranted", diff);
+                    }
+                }
+            }
+        }
+    }
+}
