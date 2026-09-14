@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { h, onMounted } from 'vue';
+import { h, ref, onMounted } from 'vue';
 import { NDataTable, NTag, NButton } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
+import LiveLogDrawer from '../components/console/LiveLogDrawer.vue';
 import { useExecutionStore } from '../stores/executionStore';
 import type { Execution } from '../types/execution';
 
 const executionStore = useExecutionStore();
+const selectedExecId = ref<string | null>(null);
+const showLog = ref(false);
 
 onMounted(() => {
   executionStore.loadExecutions();
@@ -56,7 +59,9 @@ const columns: DataTableColumns<Execution> = [
           size: 'tiny',
           secondary: true,
           onClick: () => {
+            selectedExecId.value = row.id;
             executionStore.activeExecutionId = row.id;
+            showLog.value = true;
           },
         },
         { default: () => '查看输出' }
@@ -84,6 +89,11 @@ const columns: DataTableColumns<Execution> = [
       :loading="executionStore.loading"
       :pagination="{ pageSize: 12 }"
       size="small"
+    />
+
+    <LiveLogDrawer
+      v-model:show="showLog"
+      :execution-id="selectedExecId"
     />
   </div>
 </template>

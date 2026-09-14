@@ -3,7 +3,9 @@ import { ref, onMounted } from 'vue';
 import { NButton, NInput, NSwitch, NTag, NEmpty, useMessage, useDialog } from 'naive-ui';
 import { Plus, Search, Play, Edit2, Trash2 } from 'lucide-vue-next';
 import TaskDrawer from '../components/task/TaskDrawer.vue';
+import LiveLogDrawer from '../components/console/LiveLogDrawer.vue';
 import { useTaskStore } from '../stores/taskStore';
+import { useExecutionStore } from '../stores/executionStore';
 import type { Task } from '../types/task';
 
 const emit = defineEmits<{
@@ -12,7 +14,10 @@ const emit = defineEmits<{
 }>();
 
 const taskStore = useTaskStore();
+const executionStore = useExecutionStore();
 const showDrawer = ref(false);
+const showLogDrawer = ref(false);
+const selectedExecutionId = ref<string | null>(null);
 const editingTask = ref<Task | null>(null);
 
 let message: { success: (msg: string) => void; error: (msg: string) => void };
@@ -63,6 +68,15 @@ async function handleTrigger(task: Task) {
   try {
     await taskStore.triggerTask(task.id);
     message.success(`已下发执行指令: ${task.name}`);
+    await executionStore.loadExecutions();
+    const match = executionStore.executions.find((e) => e.task_id === task.id);
+    if (match) {
+      selectedExecutionId.value = match.id;
+      executionStore.activeExecutionId = match.id;
+    } else {
+      selectedExecutionId.value = executionStore.executions[0]?.id || null;
+    }
+    showLogDrawer.value = true;
   } catch (e: any) {
     message.error('触发失败: ' + (e?.message || e));
   }
@@ -194,6 +208,12 @@ async function handleDelete(task: Task) {
       v-model:show="showDrawer"
       :task="editingTask"
       @saved="taskStore.loadTasks()"
+    />
+
+    <!-- Live Log Drawer for execution monitoring -->
+    <LiveLogDrawer
+      v-model:show="showLogDrawer"
+      :execution-id="selectedExecutionId"
     />
   </div>
 </template>
