@@ -23,7 +23,7 @@ export function getStatusTagType(
 
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
-import { NDrawer, NDrawerContent, NButton, NTag, NSwitch, useMessage } from 'naive-ui';
+import { NDrawer, NDrawerContent, NButton, NTag, NSwitch, useMessage, useDialog } from 'naive-ui';
 import { Square, Copy, Trash2, Terminal } from 'lucide-vue-next';
 import { useExecutionStore } from '../../stores/executionStore';
 import { getExecution } from '../../services/tauri';
@@ -59,6 +59,13 @@ try {
   };
 }
 
+let dialog: any = null;
+try {
+  dialog = useDialog();
+} catch {
+  dialog = null;
+}
+
 const currentExecution = ref<Execution | null>(null);
 const logContainer = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
@@ -74,7 +81,7 @@ const logLines = computed(() => {
   return rawLogs.value.slice(clearedOffset.value);
 });
 
-// Fetch execution details when executionId or show changes
+// Fetch execution details and historical output when executionId or show changes
 watch(
   [() => props.executionId, () => props.show],
   async ([id, isShown]) => {
@@ -92,6 +99,7 @@ watch(
       } catch {
         // use cached execution
       }
+      await executionStore.fetchExecutionLogs(id);
     }
   },
   { immediate: true }
@@ -145,7 +153,24 @@ async function handleCopyLogs() {
   }
 }
 
-async function handleCancel() {
+function handleCancel() {
+  if (!props.executionId) return;
+  if (dialog && dialog.warning) {
+    dialog.warning({
+      title: '确认终止执行',
+      content: '确定要强制终止当前任务正在运行的进程吗？',
+      positiveText: '终止执行',
+      negativeText: '取消',
+      onPositiveClick: () => {
+        executeCancel();
+      },
+    });
+  } else {
+    executeCancel();
+  }
+}
+
+async function executeCancel() {
   if (!props.executionId) return;
   isCancelling.value = true;
   try {

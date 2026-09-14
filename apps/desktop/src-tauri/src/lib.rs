@@ -14,7 +14,6 @@ pub fn run() {
     let manager_for_events = agent_manager.clone();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .manage(agent_manager)
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -40,6 +39,7 @@ pub fn run() {
             list_executions,
             get_execution,
             cancel_execution,
+            get_execution_output,
         ])
         .run(tauri::generate_context!())
         .expect("error while running easyJob desktop");

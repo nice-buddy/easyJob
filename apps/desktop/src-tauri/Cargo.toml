@@ -18,7 +18,6 @@ easyjob-common = { path = "../../../crates/common" }
 easyjob-domain = { path = "../../../crates/domain" }
 easyjob-ipc = { path = "../../../crates/ipc" }
 tauri = { version = "2.1", features = ["tray-icon"] }
-tauri-plugin-shell = "2.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

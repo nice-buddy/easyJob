@@ -38,3 +38,14 @@ export async function getExecution(id: ExecutionId): Promise<Execution> {
 export async function cancelExecution(id: ExecutionId): Promise<boolean> {
   return await invoke<boolean>('cancel_execution', { id });
 }
+
+export interface ExecutionOutputRecord {
+  stream: string;
+  content: string;
+  created_at: string;
+}
+
+export async function getExecutionOutput(id: ExecutionId): Promise<ExecutionOutputRecord[]> {
+  return await invoke<ExecutionOutputRecord[]>('get_execution_output', { id });
+}
+

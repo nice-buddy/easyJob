@@ -370,7 +370,7 @@ impl RequestHandler for AgentRpcHandler {
                 self.shutdown_notify.notify_waiters();
                 IpcResponse::success(req.id, serde_json::json!(true))
             }
-            "task.list" => match self.task_repo.find_all_enabled().await {
+            "task.list" => match self.task_repo.find_all().await {
                 Ok(tasks) => match serde_json::to_value(tasks) {
                     Ok(v) => IpcResponse::success(req.id, v),
                     Err(e) => IpcResponse::error(req.id, e.to_string()),
@@ -516,6 +516,31 @@ impl RequestHandler for AgentRpcHandler {
                         Err(e) => IpcResponse::error(req.id, e.to_string()),
                     },
                     Ok(None) => IpcResponse::error(req.id, format!("Execution '{}' not found", id)),
+                    Err(e) => IpcResponse::error(req.id, e.to_string()),
+                }
+            }
+            "execution.get_output" => {
+                let id_val = if req.params.is_object() && req.params.get("id").is_some() {
+                    &req.params["id"]
+                } else if req.params.is_object() && req.params.get("execution_id").is_some() {
+                    &req.params["execution_id"]
+                } else {
+                    &req.params
+                };
+                let id: ExecutionId = match serde_json::from_value(id_val.clone()) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return IpcResponse::error(
+                            req.id,
+                            format!("Invalid execution id parameter: {}", e),
+                        )
+                    }
+                };
+                match self.exec_repo.get_outputs(&id).await {
+                    Ok(records) => match serde_json::to_value(records) {
+                        Ok(v) => IpcResponse::success(req.id, v),
+                        Err(e) => IpcResponse::error(req.id, e.to_string()),
+                    },
                     Err(e) => IpcResponse::error(req.id, e.to_string()),
                 }
             }

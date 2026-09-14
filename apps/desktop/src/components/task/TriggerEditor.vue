@@ -112,11 +112,16 @@ function removeTrigger(index: number) {
   emit('update:triggers', next);
 }
 
+function normalizeTime(val: string): string {
+  if (!val) return '00:00:00';
+  return val.length === 5 ? `${val}:00` : val;
+}
+
 function changeKindType(trigger: Trigger, type: string) {
   const defaultTz =
     typeof Intl !== 'undefined' && Intl.DateTimeFormat
-      ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local'
-      : 'Local';
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+      : 'Asia/Shanghai';
 
   if (type === 'Interval') {
     trigger.kind = { Interval: { interval_secs: 60 } };
@@ -233,7 +238,8 @@ function formatIntervalPreview(sec: number): string {
           <input
             type="time"
             step="1"
-            v-model="tr.kind.Daily.time"
+            :value="tr.kind.Daily.time"
+            @change="tr.kind.Daily.time = normalizeTime(($event.target as HTMLInputElement).value)"
             class="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-mono"
           />
         </div>
@@ -241,7 +247,7 @@ function formatIntervalPreview(sec: number): string {
           <label class="block text-slate-500 dark:text-zinc-400 mb-1">时区 (Timezone)</label>
           <NInput
             v-model:value="tr.kind.Daily.timezone"
-            placeholder="Local 或 Asia/Shanghai 等"
+            placeholder="例如 Asia/Shanghai, UTC"
             size="small"
           />
         </div>
@@ -255,7 +261,8 @@ function formatIntervalPreview(sec: number): string {
             <input
               type="time"
               step="1"
-              v-model="tr.kind.Weekly.time"
+              :value="tr.kind.Weekly.time"
+              @change="tr.kind.Weekly.time = normalizeTime(($event.target as HTMLInputElement).value)"
               class="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-mono"
             />
           </div>
@@ -263,7 +270,7 @@ function formatIntervalPreview(sec: number): string {
             <label class="block text-slate-500 dark:text-zinc-400 mb-1">时区 (Timezone)</label>
             <NInput
               v-model:value="tr.kind.Weekly.timezone"
-              placeholder="Local 或 Asia/Shanghai 等"
+              placeholder="例如 Asia/Shanghai, UTC"
               size="small"
             />
           </div>
@@ -285,7 +292,7 @@ function formatIntervalPreview(sec: number): string {
         <NDatePicker
           type="datetime"
           :value="parseDate(tr.kind.Once.fire_at)"
-          @update:value="tr.kind.Once.fire_at = new Date($event).toISOString()"
+          @update:value="tr.kind.Once.fire_at = $event ? new Date($event).toISOString() : ''"
           clearable
         />
       </div>

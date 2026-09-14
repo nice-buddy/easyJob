@@ -52,14 +52,24 @@ function changeKindType(action: Action, type: string) {
   }
 }
 
+function parseCliArgs(input: string): string[] {
+  const matches = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g);
+  if (!matches) return [];
+  return matches.map((arg) => {
+    if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
+      return arg.slice(1, -1);
+    }
+    return arg;
+  });
+}
+
 function getArgsString(args: string[]): string {
-  return args.join(' ');
+  return args.map((arg) => (arg.includes(' ') ? `"${arg}"` : arg)).join(' ');
 }
 
 function setArgsString(action: Action, val: string) {
   if ('ExecuteProgram' in action.kind) {
-    const trimmed = val.trim();
-    action.kind.ExecuteProgram.args = trimmed ? trimmed.split(/\s+/) : [];
+    action.kind.ExecuteProgram.args = parseCliArgs(val.trim());
   }
 }
 </script>

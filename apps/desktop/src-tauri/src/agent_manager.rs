@@ -10,6 +10,8 @@ use tracing::{info, warn};
 pub struct AgentManager {
     ipc_path: PathBuf,
     client: Arc<Mutex<Option<IpcClient>>>,
+    connect_lock: Arc<Mutex<()>>,
+    last_spawn_attempt: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl Default for AgentManager {
@@ -27,6 +29,8 @@ impl AgentManager {
         Self {
             ipc_path: path,
             client: Arc::new(Mutex::new(None)),
+            connect_lock: Arc::new(Mutex::new(())),
+            last_spawn_attempt: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -40,27 +44,56 @@ impl AgentManager {
     }
 
     pub async fn ensure_connected(&self) -> Result<IpcClient, String> {
-        let mut guard = self.client.lock().await;
-        if let Some(ref client) = *guard {
-            return Ok(client.clone());
+        // Fast-path: already connected
+        {
+            let guard = self.client.lock().await;
+            if let Some(ref client) = *guard {
+                return Ok(client.clone());
+            }
+        }
+
+        // Acquire connection lock to serialize reconnection attempts
+        let _conn_guard = self.connect_lock.lock().await;
+
+        // Double-check after acquiring connect lock
+        {
+            let guard = self.client.lock().await;
+            if let Some(ref client) = *guard {
+                return Ok(client.clone());
+            }
         }
 
         if let Ok(client) = IpcClient::connect(&self.ipc_path).await {
+            let mut guard = self.client.lock().await;
             *guard = Some(client.clone());
             return Ok(client);
         }
 
-        // Try spawning agent binary
-        info!("easyjob-agent is not running; attempting to spawn daemon");
-        if let Err(e) = Self::spawn_agent_process() {
-            warn!("Failed to spawn easyjob-agent: {}", e);
+        // Check spawn cooldown (5s) to avoid spawning repeatedly if daemon fails to launch
+        let should_spawn = {
+            let mut last = self.last_spawn_attempt.lock().await;
+            match *last {
+                Some(t) if t.elapsed() < Duration::from_secs(5) => false,
+                _ => {
+                    *last = Some(std::time::Instant::now());
+                    true
+                }
+            }
+        };
+
+        if should_spawn {
+            info!("easyjob-agent is not running; attempting to spawn daemon");
+            if let Err(e) = Self::spawn_agent_process() {
+                warn!("Failed to spawn easyjob-agent: {}", e);
+            }
         }
 
-        // Retry connecting with backoff
+        // Retry connecting without holding the client lock
         for _ in 0..15 {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if let Ok(client) = IpcClient::connect(&self.ipc_path).await {
                 info!("Successfully connected to easyjob-agent IPC");
+                let mut guard = self.client.lock().await;
                 *guard = Some(client.clone());
                 return Ok(client);
             }

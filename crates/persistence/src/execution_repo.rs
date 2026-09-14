@@ -4,6 +4,13 @@ use easyjob_common::{Error, ExecutionId, Result, TaskId, TriggerId};
 use easyjob_domain::execution::{Execution, ExecutionStatus};
 use sqlx::{Row, SqlitePool};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExecutionOutputRecord {
+    pub stream: String,
+    pub content: String,
+    pub created_at: String,
+}
+
 #[async_trait]
 pub trait ExecutionRepository: Send + Sync {
     async fn create_run(&self, run: &Execution) -> Result<()>;
@@ -11,6 +18,7 @@ pub trait ExecutionRepository: Send + Sync {
     async fn find_run_by_id(&self, id: &ExecutionId) -> Result<Option<Execution>>;
     async fn find_recent_runs(&self, limit: u32) -> Result<Vec<Execution>>;
     async fn append_output(&self, run_id: &ExecutionId, stream: &str, content: &str) -> Result<()>;
+    async fn get_outputs(&self, run_id: &ExecutionId) -> Result<Vec<ExecutionOutputRecord>>;
 }
 
 pub struct SqliteExecutionRepository {
@@ -107,6 +115,26 @@ impl ExecutionRepository for SqliteExecutionRepository {
         .await
         .map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
+    }
+
+    async fn get_outputs(&self, run_id: &ExecutionId) -> Result<Vec<ExecutionOutputRecord>> {
+        let rows = sqlx::query(
+            "SELECT stream, content, created_at FROM run_outputs WHERE run_id = ? ORDER BY id ASC",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+        let mut list = Vec::with_capacity(rows.len());
+        for row in rows {
+            list.push(ExecutionOutputRecord {
+                stream: row.get("stream"),
+                content: row.get("content"),
+                created_at: row.get("created_at"),
+            });
+        }
+        Ok(list)
     }
 }
 

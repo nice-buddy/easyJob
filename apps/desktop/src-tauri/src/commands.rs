@@ -93,3 +93,13 @@ pub async fn cancel_execution(
         .await?;
     serde_json::from_value(val).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn get_execution_output(
+    id: ExecutionId,
+    manager: State<'_, Arc<AgentManager>>,
+) -> Result<serde_json::Value, String> {
+    manager
+        .call("execution.get_output", serde_json::json!({ "id": id }))
+        .await
+}

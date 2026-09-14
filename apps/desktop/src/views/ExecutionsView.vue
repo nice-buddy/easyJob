@@ -4,21 +4,36 @@ import { NDataTable, NTag, NButton } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import LiveLogDrawer from '../components/console/LiveLogDrawer.vue';
 import { useExecutionStore } from '../stores/executionStore';
+import { useTaskStore } from '../stores/taskStore';
 import type { Execution } from '../types/execution';
 
 const executionStore = useExecutionStore();
+const taskStore = useTaskStore();
 const selectedExecId = ref<string | null>(null);
 const showLog = ref(false);
 
 onMounted(() => {
   executionStore.loadExecutions();
+  if (taskStore.tasks.length === 0) {
+    taskStore.loadTasks();
+  }
 });
 
 const columns: DataTableColumns<Execution> = [
   {
-    title: '任务 ID',
+    title: '关联任务',
     key: 'task_id',
     ellipsis: true,
+    render(row: Execution) {
+      const task = taskStore.tasks.find((t) => t.id === row.task_id);
+      if (task) {
+        return h('div', { class: 'flex flex-col' }, [
+          h('span', { class: 'font-medium text-slate-800 dark:text-zinc-200' }, task.name),
+          h('span', { class: 'text-[11px] text-slate-400 dark:text-zinc-500 font-mono truncate' }, row.task_id),
+        ]);
+      }
+      return h('span', { class: 'font-mono text-xs text-slate-600 dark:text-zinc-400' }, row.task_id);
+    },
   },
   {
     title: '状态',
