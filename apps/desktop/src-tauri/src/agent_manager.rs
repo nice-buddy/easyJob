@@ -69,6 +69,27 @@ impl AgentManager {
         Err("Failed to connect to easyjob-agent daemon".to_string())
     }
 
+    pub async fn call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let client = self.ensure_connected().await?;
+        match client.call(method, params.clone()).await {
+            Ok(res) => Ok(res),
+            Err(e) if is_connection_error(&e) => {
+                warn!(
+                    "IPC call '{}' failed with connection error ({}). Reconnecting and retrying...",
+                    method, e
+                );
+                self.disconnect().await;
+                let client = self.ensure_connected().await?;
+                client.call(method, params).await.map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     fn find_agent_binary() -> Result<PathBuf, String> {
         if let Ok(current_exe) = std::env::current_exe() {
             let mut dir = current_exe;
@@ -100,6 +121,9 @@ impl AgentManager {
         let bin = Self::find_agent_binary()?;
         let mut cmd = std::process::Command::new(bin);
         cmd.arg("--daemon");
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
 
         #[cfg(target_os = "windows")]
         {
@@ -111,5 +135,21 @@ impl AgentManager {
         cmd.spawn()
             .map_err(|e| format!("Spawn process error: {}", e))?;
         Ok(())
+    }
+}
+
+fn is_connection_error(err: &easyjob_common::Error) -> bool {
+    match err {
+        easyjob_common::Error::Io(_) => true,
+        easyjob_common::Error::Other(msg) => {
+            let lower = msg.to_lowercase();
+            lower.contains("failed to send ipc request")
+                || lower.contains("channel closed")
+                || lower.contains("connection")
+                || lower.contains("broken pipe")
+                || lower.contains("reset by peer")
+                || lower.contains("timed out")
+        }
+        _ => false,
     }
 }

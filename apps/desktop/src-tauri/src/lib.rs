@@ -15,12 +15,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(agent_manager.clone())
-        .manage((*agent_manager).clone())
+        .manage(agent_manager)
         .setup(move |app| {
             let handle = app.handle().clone();
             spawn_event_relay(handle.clone(), manager_for_events);
-            let _ = tray::setup_system_tray(&handle);
+            if let Err(e) = tray::setup_system_tray(&handle) {
+                tracing::warn!("Failed to setup system tray: {:?}", e);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

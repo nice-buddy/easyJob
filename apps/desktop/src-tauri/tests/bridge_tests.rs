@@ -272,3 +272,28 @@ async fn test_agent_manager_event_subscription() {
     assert_eq!(event.event, "task.updated");
     assert_eq!(event.data, serde_json::json!({ "ok": true }));
 }
+
+#[tokio::test]
+async fn test_agent_manager_call_helper() {
+    let dir = tempdir().unwrap();
+    let sock = dir.path().join("mock_call.sock");
+
+    let server = IpcServer::bind(&sock, Arc::new(MockAgentHandler))
+        .await
+        .unwrap();
+    tokio::spawn(server.run());
+
+    let manager = AgentManager::with_ipc_path(sock.clone());
+    let val = manager
+        .call("agent.status", serde_json::json!({}))
+        .await
+        .unwrap();
+    let status: AgentStatus = serde_json::from_value(val).unwrap();
+    assert_eq!(status.version, "0.1.0");
+
+    let err = manager
+        .call("unknown.method", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("not found"));
+}
