@@ -99,7 +99,7 @@ easyJob/
 - Consumes: Workspace root `Cargo.toml`
 - Produces: Working Tauri 2 + Vite 6 scaffolding with passing `cargo check -p easyjob-desktop` and `pnpm build`
 
-- [ ] **Step 1: Create frontend configuration files in `apps/desktop`**
+- [x] **Step 1: Create frontend configuration files in `apps/desktop`**
 
 ```json
 // apps/desktop/package.json
@@ -222,7 +222,7 @@ export default {
 </html>
 ```
 
-- [ ] **Step 2: Create Tauri Rust crate configuration in `apps/desktop/src-tauri`**
+- [x] **Step 2: Create Tauri Rust crate configuration in `apps/desktop/src-tauri`**
 
 ```toml
 # apps/desktop/src-tauri/Cargo.toml
@@ -299,7 +299,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 3: Update root `Cargo.toml` and create initial `src-tauri/src/lib.rs` and `src-tauri/src/main.rs`**
+- [x] **Step 3: Update root `Cargo.toml` and create initial `src-tauri/src/lib.rs` and `src-tauri/src/main.rs`**
 
 Update `Cargo.toml`:
 ```toml
@@ -358,14 +358,14 @@ fn main() {
 }
 ```
 
-- [ ] **Step 4: Install dependencies and verify build**
+- [x] **Step 4: Install dependencies and verify build**
 
 Run: `pnpm -C apps/desktop install`
 Run: `pnpm -C apps/desktop build`
 Run: `cargo check -p easyjob-desktop`
 Expected: 0 errors
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/desktop Cargo.toml Cargo.lock
@@ -388,7 +388,7 @@ git commit -m "chore(desktop): scaffold Tauri 2 and Vue 3 workspace application"
 - Consumes: `easyjob-ipc`, `easyjob-common`, `easyjob-domain`
 - Produces: Registered Tauri commands (`list_tasks`, `save_task`, `trigger_task`, `cancel_execution`, etc.), system tray and event forwarder.
 
-- [ ] **Step 1: Write integration tests for Tauri commands and event bridge**
+- [x] **Step 1: Write integration tests for Tauri commands and event bridge**
 
 Create `apps/desktop/src-tauri/tests/bridge_tests.rs`:
 ```rust
@@ -440,12 +440,12 @@ async fn test_ipc_bridge_client_calls() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify bridge logic passes**
+- [x] **Step 2: Run test to verify bridge logic passes**
 
 Run: `cargo test -p easyjob-desktop`
 Expected: PASS
 
-- [ ] **Step 3: Implement `agent_manager.rs`**
+- [x] **Step 3: Implement `agent_manager.rs`**
 
 Create `apps/desktop/src-tauri/src/agent_manager.rs`:
 ```rust
@@ -549,7 +549,7 @@ impl AgentManager {
 }
 ```
 
-- [ ] **Step 4: Implement `commands.rs`**
+- [x] **Step 4: Implement `commands.rs`**
 
 Create `apps/desktop/src-tauri/src/commands.rs`:
 ```rust
@@ -663,7 +663,7 @@ pub async fn cancel_execution(
 }
 ```
 
-- [ ] **Step 5: Implement `events.rs` and `tray.rs`**
+- [x] **Step 5: Implement `events.rs` and `tray.rs`**
 
 Create `apps/desktop/src-tauri/src/events.rs`:
 ```rust
@@ -779,13 +779,13 @@ pub fn run() {
 }
 ```
 
-- [ ] **Step 6: Run tests and verify build**
+- [x] **Step 6: Run tests and verify build**
 
 Run: `cargo test -p easyjob-desktop`
 Run: `cargo check -p easyjob-desktop`
 Expected: 0 errors, all tests passing
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/desktop/src-tauri
@@ -810,7 +810,7 @@ git commit -m "feat(desktop): implement Tauri commands, IPC agent manager, event
 - Consumes: `@tauri-apps/api`
 - Produces: Reactive Pinia stores for tasks, executions and agent connection state.
 
-- [ ] **Step 1: Define TypeScript models matching Rust domain**
+- [x] **Step 1: Define TypeScript models matching Rust domain**
 
 Create `apps/desktop/src/types/task.ts`:
 ```typescript
@@ -918,7 +918,7 @@ export interface AgentStatus {
 }
 ```
 
-- [ ] **Step 2: Implement Tauri Service Wrappers**
+- [x] **Step 2: Implement Tauri Service Wrappers**
 
 Create `apps/desktop/src/services/tauri.ts`:
 ```typescript
@@ -982,7 +982,7 @@ export async function onExecutionFinished(cb: (payload: { execution_id: string; 
 }
 ```
 
-- [ ] **Step 3: Implement Pinia Stores**
+- [x] **Step 3: Implement Pinia Stores**
 
 Create `apps/desktop/src/stores/agentStore.ts`:
 ```typescript
@@ -1116,12 +1116,12 @@ export const useExecutionStore = defineStore('executions', () => {
 });
 ```
 
-- [ ] **Step 4: Verify TypeScript compilation**
+- [x] **Step 4: Verify TypeScript compilation**
 
 Run: `pnpm -C apps/desktop run build`
 Expected: 0 type errors
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/desktop/src/types apps/desktop/src/services apps/desktop/src/stores
@@ -1144,7 +1144,7 @@ git commit -m "feat(desktop): define frontend types, IPC wrappers, and Pinia sto
 - Consumes: Pinia stores from Task 3
 - Produces: Complete navigable desktop UI shell with Naive UI theme and notifications.
 
-- [ ] **Step 1: Set up `main.ts` and `App.vue` with Naive UI provider**
+- [x] **Step 1: Set up `main.ts` and `App.vue` with Naive UI provider**
 
 Update `apps/desktop/src/main.ts`:
 ```typescript
@@ -1206,7 +1206,7 @@ onMounted(async () => {
 </template>
 ```
 
-- [ ] **Step 2: Implement `AppSidebar.vue`**
+- [x] **Step 2: Implement `AppSidebar.vue`**
 
 Create `apps/desktop/src/components/layout/AppSidebar.vue`:
 ```vue
@@ -1313,7 +1313,7 @@ const agentStore = useAgentStore();
 </template>
 ```
 
-- [ ] **Step 3: Implement `TasksView.vue`**
+- [x] **Step 3: Implement `TasksView.vue`**
 
 Create `apps/desktop/src/views/TasksView.vue`:
 ```vue
@@ -1452,7 +1452,7 @@ async function handleDelete(task: Task) {
 </template>
 ```
 
-- [ ] **Step 4: Implement `ExecutionsView.vue` and `SettingsView.vue`**
+- [x] **Step 4: Implement `ExecutionsView.vue` and `SettingsView.vue`**
 
 Create `apps/desktop/src/views/ExecutionsView.vue`:
 ```vue
@@ -1587,12 +1587,12 @@ const agentStore = useAgentStore();
 </template>
 ```
 
-- [ ] **Step 5: Verify build**
+- [x] **Step 5: Verify build**
 
 Run: `pnpm -C apps/desktop run build`
 Expected: PASS with 0 errors
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/desktop/src/views apps/desktop/src/components apps/desktop/src/App.vue apps/desktop/src/main.ts
@@ -1613,7 +1613,7 @@ git commit -m "feat(desktop): implement AppSidebar layout and core views for tas
 - Consumes: `taskStore`, `types/task.ts`
 - Produces: Full create/edit drawer with visual trigger/action forms without needing cron syntax.
 
-- [ ] **Step 1: Implement `TriggerEditor.vue`**
+- [x] **Step 1: Implement `TriggerEditor.vue`**
 
 Create `apps/desktop/src/components/task/TriggerEditor.vue`:
 ```vue
@@ -1748,7 +1748,7 @@ function changeKindType(trigger: Trigger, type: string) {
 </template>
 ```
 
-- [ ] **Step 2: Implement `ActionEditor.vue`**
+- [x] **Step 2: Implement `ActionEditor.vue`**
 
 Create `apps/desktop/src/components/task/ActionEditor.vue`:
 ```vue
@@ -1818,7 +1818,7 @@ function removeAction(index: number) {
 </template>
 ```
 
-- [ ] **Step 3: Implement `TaskDrawer.vue`**
+- [x] **Step 3: Implement `TaskDrawer.vue`**
 
 Create `apps/desktop/src/components/task/TaskDrawer.vue`:
 ```vue
@@ -1953,7 +1953,7 @@ async function handleSave() {
 </template>
 ```
 
-- [ ] **Step 4: Connect `TaskDrawer` in `TasksView.vue`**
+- [x] **Step 4: Connect `TaskDrawer` in `TasksView.vue`**
 
 Update `apps/desktop/src/views/TasksView.vue` to declare:
 ```typescript
@@ -1972,12 +1972,12 @@ function openEditDrawer(task: Task) {
 ```
 And render `<TaskDrawer v-model:show="showDrawer" :task="editingTask" @saved="taskStore.loadTasks()" />`.
 
-- [ ] **Step 5: Verify build**
+- [x] **Step 5: Verify build**
 
 Run: `pnpm -C apps/desktop run build`
 Expected: PASS with 0 errors
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/desktop/src/components/task apps/desktop/src/views/TasksView.vue
@@ -1997,7 +1997,7 @@ git commit -m "feat(desktop): implement TaskDrawer with visual TriggerEditor and
 - Consumes: `executionStore`, `cancel_execution` Tauri command
 - Produces: Terminal-style real-time log drawer with auto-scroll and task cancellation.
 
-- [ ] **Step 1: Implement `LiveLogDrawer.vue`**
+- [x] **Step 1: Implement `LiveLogDrawer.vue`**
 
 Create `apps/desktop/src/components/console/LiveLogDrawer.vue`:
 ```vue
@@ -2110,7 +2110,7 @@ async function handleCancel() {
 </template>
 ```
 
-- [ ] **Step 2: Connect `LiveLogDrawer` in `ExecutionsView.vue`**
+- [x] **Step 2: Connect `LiveLogDrawer` in `ExecutionsView.vue`**
 
 Update `apps/desktop/src/views/ExecutionsView.vue`:
 ```vue
@@ -2121,12 +2121,12 @@ Update `apps/desktop/src/views/ExecutionsView.vue`:
 />
 ```
 
-- [ ] **Step 3: Verify build**
+- [x] **Step 3: Verify build**
 
 Run: `pnpm -C apps/desktop run build`
 Expected: PASS with 0 errors
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/desktop/src/components/console apps/desktop/src/views/ExecutionsView.vue
@@ -2145,32 +2145,32 @@ git commit -m "feat(desktop): implement terminal LiveLogDrawer with streaming au
 - Consumes: All Phase 1, Phase 2, and Phase 3 deliverables
 - Produces: 100% verified test suite across all workspace crates and desktop app.
 
-- [ ] **Step 1: Verify all Rust tests in workspace**
+- [x] **Step 1: Verify all Rust tests in workspace**
 
 Run: `cargo test --all`
 Expected: 100% PASS (at least 74 tests)
 
-- [ ] **Step 2: Verify Clippy across entire workspace**
+- [x] **Step 2: Verify Clippy across entire workspace**
 
 Run: `cargo clippy --workspace --all-targets -- -D warnings`
 Expected: 0 warnings, 0 errors
 
-- [ ] **Step 3: Verify Rust formatting**
+- [x] **Step 3: Verify Rust formatting**
 
 Run: `cargo fmt --check`
 Expected: PASS
 
-- [ ] **Step 4: Verify Frontend build**
+- [x] **Step 4: Verify Frontend build**
 
 Run: `pnpm -C apps/desktop run build`
 Expected: PASS with 0 TypeScript errors and optimized bundle output
 
-- [ ] **Step 5: Verify Desktop app check**
+- [x] **Step 5: Verify Desktop app check**
 
 Run: `cargo check -p easyjob-desktop`
 Expected: PASS with 0 warnings
 
-- [ ] **Step 6: Commit and documentation**
+- [x] **Step 6: Commit and documentation**
 
 ```bash
 git add .
