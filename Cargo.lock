@@ -358,16 +358,21 @@ name = "easyjob"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "easyjob-agent",
  "easyjob-common",
  "easyjob-domain",
  "easyjob-executor",
+ "easyjob-ipc",
  "easyjob-logging",
  "easyjob-persistence",
  "easyjob-platform",
  "easyjob-scheduler",
+ "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
