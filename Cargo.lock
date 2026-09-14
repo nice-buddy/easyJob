@@ -975,6 +975,8 @@ dependencies = [
 name = "easyjob-desktop"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "easyjob-common",
  "easyjob-domain",
  "easyjob-ipc",
@@ -983,6 +985,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
+ "tempfile",
  "tokio",
  "tracing",
 ]
