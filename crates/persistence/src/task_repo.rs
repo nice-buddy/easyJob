@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 #[async_trait]
 pub trait TaskRepository: Send + Sync {
+    async fn find_all(&self) -> Result<Vec<Task>>;
     async fn find_all_enabled(&self) -> Result<Vec<Task>>;
     async fn find_by_id(&self, id: &TaskId) -> Result<Option<Task>>;
     async fn save(&self, task: &Task) -> Result<()>;
@@ -27,6 +28,24 @@ impl SqliteTaskRepository {
 
 #[async_trait]
 impl TaskRepository for SqliteTaskRepository {
+    async fn find_all(&self) -> Result<Vec<Task>> {
+        let rows = sqlx::query("SELECT id FROM tasks ORDER BY created_at DESC")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let mut tasks = Vec::new();
+        for row in rows {
+            let id_str: String = row.get("id");
+            if let Ok(id) = TaskId::parse(&id_str) {
+                if let Some(task) = self.find_by_id(&id).await? {
+                    tasks.push(task);
+                }
+            }
+        }
+        Ok(tasks)
+    }
+
     async fn find_all_enabled(&self) -> Result<Vec<Task>> {
         let rows = sqlx::query("SELECT id FROM tasks WHERE enabled = 1")
             .fetch_all(&self.pool)

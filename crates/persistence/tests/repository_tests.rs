@@ -188,6 +188,10 @@ async fn test_task_find_all_enabled_and_cascade_delete() {
     task_repo.save(&task_enabled).await.unwrap();
     task_repo.save(&task_disabled).await.unwrap();
 
+    let all_tasks = task_repo.find_all().await.unwrap();
+    assert!(all_tasks.iter().any(|t| t.id == task_id_enabled));
+    assert!(all_tasks.iter().any(|t| t.id == task_id_disabled));
+
     let enabled_tasks = task_repo.find_all_enabled().await.unwrap();
     assert!(enabled_tasks.iter().any(|t| t.id == task_id_enabled));
     assert!(!enabled_tasks.iter().any(|t| t.id == task_id_disabled));
@@ -283,6 +287,13 @@ async fn test_execution_repo_crud_and_append_output() {
     let c1: String = rows[0].get("content");
     assert_eq!(s1, "stdout");
     assert_eq!(c1, "line 1\n");
+
+    let outputs = exec_repo.get_outputs(&exec.id).await.unwrap();
+    assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs[0].stream, "stdout");
+    assert_eq!(outputs[0].content, "line 1\n");
+    assert_eq!(outputs[1].stream, "stderr");
+    assert_eq!(outputs[1].content, "warning 1\n");
 
     // Test find_recent_runs
     let mut exec2 = Execution::new(task_id, None, Some(Utc::now()));
