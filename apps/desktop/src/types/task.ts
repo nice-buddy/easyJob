@@ -72,6 +72,37 @@ export interface Action {
   kind: ActionKind;
 }
 
+export function getEmptyTask(): Task {
+  return {
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'task-' + Math.random().toString(36).substring(2, 9),
+    name: '',
+    description: '',
+    enabled: true,
+    triggers: [],
+    actions: [],
+    execution_policy: {
+      concurrency_policy: 'SkipIfRunning',
+      missed_run_policy: 'RunOnce',
+      retry_policy: {
+        max_retries: 0,
+        delay_secs: 0,
+      },
+      timeout_secs: 3600,
+    },
+    working_directory: null,
+    environment: {},
+    version: 1,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function parseDate(iso?: string | null): number | null {
+  if (!iso) return null;
+  const time = Date.parse(iso);
+  return isNaN(time) ? null : time;
+}
+
 export interface Task {
   id: TaskId;
   name: string;

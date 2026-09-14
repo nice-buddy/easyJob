@@ -1,3 +1,7 @@
+<script lang="ts">
+export { getEmptyTask } from '../../types/task';
+</script>
+
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import {
@@ -17,6 +21,7 @@ import {
 import TriggerEditor from './TriggerEditor.vue';
 import ActionEditor from './ActionEditor.vue';
 import type { Task, ConcurrencyPolicy, MissedRunPolicy } from '../../types/task';
+import { getEmptyTask } from '../../types/task';
 import { useTaskStore } from '../../stores/taskStore';
 
 const props = defineProps<{
@@ -50,31 +55,6 @@ const isSaving = ref(false);
 const activeTab = ref('basic');
 const currentTask = ref<Task>(getEmptyTask());
 
-function getEmptyTask(): Task {
-  return {
-    id: crypto.randomUUID(),
-    name: '',
-    description: '',
-    enabled: true,
-    triggers: [],
-    actions: [],
-    execution_policy: {
-      concurrency_policy: 'SkipIfRunning',
-      missed_run_policy: 'RunOnce',
-      retry_policy: {
-        max_retries: 0,
-        delay_secs: 0,
-      },
-      timeout_secs: 3600,
-    },
-    working_directory: null,
-    environment: {},
-    version: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-}
-
 watch(
   () => props.task,
   (t) => {
@@ -86,6 +66,20 @@ watch(
     activeTab.value = 'basic';
   },
   { immediate: true }
+);
+
+watch(
+  () => props.show,
+  (show) => {
+    if (show) {
+      if (props.task) {
+        currentTask.value = JSON.parse(JSON.stringify(props.task));
+      } else {
+        currentTask.value = getEmptyTask();
+      }
+      activeTab.value = 'basic';
+    }
+  }
 );
 
 const concurrencyOptions: { label: string; value: ConcurrencyPolicy }[] = [

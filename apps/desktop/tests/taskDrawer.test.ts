@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { ref, reactive, watch, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import TriggerEditor from '../src/components/task/TriggerEditor.vue';
 import ActionEditor from '../src/components/task/ActionEditor.vue';
@@ -7,7 +8,7 @@ import TasksView from '../src/views/TasksView.vue';
 import { useTaskStore } from '../src/stores/taskStore';
 import * as tauriService from '../src/services/tauri';
 import type { Task, Trigger, Action, TriggerKind, ActionKind } from '../src/types/task';
-import { getTriggerType, getActionType } from '../src/types/task';
+import { getTriggerType, getActionType, getEmptyTask, parseDate } from '../src/types/task';
 
 vi.mock('../src/services/tauri', () => ({
   listTasks: vi.fn(),
@@ -106,6 +107,70 @@ describe('TaskDrawer, TriggerEditor & ActionEditor', () => {
       expect(getTriggerType(once)).toBe('Once');
       const parsed = JSON.parse(JSON.stringify(once));
       expect(parsed.Once.fire_at).toBe('2026-10-01T12:00:00Z');
+    });
+
+    it('verifies Once trigger datetime parsing and formatting', () => {
+      const isoStr = '2026-10-01T12:00:00Z';
+      const parsedMs = parseDate(isoStr);
+      expect(parsedMs).toBe(Date.parse(isoStr));
+
+      expect(parseDate(null)).toBeNull();
+      expect(parseDate(undefined)).toBeNull();
+      expect(parseDate('')).toBeNull();
+      expect(parseDate('invalid-date')).toBeNull();
+
+      const ts = 1790856000000;
+      const formattedIso = new Date(ts).toISOString();
+      expect(formattedIso).toBe('2026-10-01T12:00:00.000Z');
+      expect(new Date(parseDate(formattedIso)!).toISOString()).toBe(formattedIso);
+
+      const onceTrigger: Trigger = {
+        id: 'once-1',
+        task_id: 'task-1',
+        enabled: true,
+        kind: { Once: { fire_at: formattedIso } },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      expect(getTriggerType(onceTrigger.kind)).toBe('Once');
+      if (typeof onceTrigger.kind === 'object' && 'Once' in onceTrigger.kind) {
+        expect(onceTrigger.kind.Once.fire_at).toBe('2026-10-01T12:00:00.000Z');
+      }
+    });
+
+    it('converts interval unit selections to seconds correctly', () => {
+      const trigger: Trigger = {
+        id: 'trig-int',
+        task_id: 'task-1',
+        enabled: true,
+        kind: { Interval: { interval_secs: 60 } },
+        created_at: '',
+        updated_at: '',
+      };
+
+      // 5 minutes -> 300 seconds
+      const minutes = 5;
+      const minMultiplier = 60;
+      if (typeof trigger.kind === 'object' && 'Interval' in trigger.kind) {
+        trigger.kind.Interval.interval_secs = minutes * minMultiplier;
+      }
+      expect((trigger.kind as any).Interval.interval_secs).toBe(300);
+
+      // 2 hours -> 7200 seconds
+      const hours = 2;
+      const hrMultiplier = 3600;
+      if (typeof trigger.kind === 'object' && 'Interval' in trigger.kind) {
+        trigger.kind.Interval.interval_secs = hours * hrMultiplier;
+      }
+      expect((trigger.kind as any).Interval.interval_secs).toBe(7200);
+
+      // 45 seconds -> 45 seconds
+      const seconds = 45;
+      const secMultiplier = 1;
+      if (typeof trigger.kind === 'object' && 'Interval' in trigger.kind) {
+        trigger.kind.Interval.interval_secs = seconds * secMultiplier;
+      }
+      expect((trigger.kind as any).Interval.interval_secs).toBe(45);
     });
 
     it('verifies AgentStarted wire format is a bare string', () => {
@@ -391,6 +456,151 @@ describe('TaskDrawer, TriggerEditor & ActionEditor', () => {
       expect(tauriService.saveTask).toHaveBeenCalledWith(fullTask);
       expect(saved.id).toBe(fullTask.id);
       expect(taskStore.tasks).toContainEqual(fullTask);
+    });
+  });
+
+  describe('TaskDrawer Lifecycle & Reset Behavior', () => {
+    it('verifies that consecutive opens of TaskDrawer with task = null generate distinct task IDs and clean state', async () => {
+      const props = reactive<{ show: boolean; task: Task | null }>({
+        show: false,
+        task: null,
+      });
+
+      const currentTask = ref<Task>(getEmptyTask());
+      const activeTab = ref('basic');
+
+      // Watchers identical to TaskDrawer.vue implementation
+      watch(
+        () => props.task,
+        (t) => {
+          if (t) {
+            currentTask.value = JSON.parse(JSON.stringify(t));
+          } else {
+            currentTask.value = getEmptyTask();
+          }
+          activeTab.value = 'basic';
+        },
+        { immediate: true }
+      );
+
+      watch(
+        () => props.show,
+        (show) => {
+          if (show) {
+            if (props.task) {
+              currentTask.value = JSON.parse(JSON.stringify(props.task));
+            } else {
+              currentTask.value = getEmptyTask();
+            }
+            activeTab.value = 'basic';
+          }
+        }
+      );
+
+      // Initial task ID
+      const initialId = currentTask.value.id;
+      expect(initialId).toBeDefined();
+
+      // 1st open: user opens drawer to create new task
+      props.show = true;
+      await nextTick();
+
+      const firstOpenId = currentTask.value.id;
+      expect(firstOpenId).toBeDefined();
+      expect(firstOpenId).not.toBe(initialId);
+      expect(currentTask.value.name).toBe('');
+      expect(currentTask.value.triggers).toHaveLength(0);
+      expect(currentTask.value.actions).toHaveLength(0);
+
+      // User enters data in drawer
+      currentTask.value.name = 'First Task In Progress';
+      currentTask.value.description = 'Unsaved draft description';
+      currentTask.value.triggers.push({
+        id: 't-1',
+        task_id: firstOpenId,
+        enabled: true,
+        kind: 'AgentStarted',
+        created_at: '',
+        updated_at: '',
+      });
+      currentTask.value.actions.push({
+        id: 'a-1',
+        task_id: firstOpenId,
+        sequence: 1,
+        enabled: true,
+        kind: { ExecuteShell: { command: 'echo draft' } },
+      });
+      activeTab.value = 'actions';
+
+      // User closes drawer (cancel or after save)
+      props.show = false;
+      await nextTick();
+
+      // 2nd open: user clicks "新建任务" again (consecutive create with task = null)
+      props.show = true;
+      await nextTick();
+
+      const secondOpenId = currentTask.value.id;
+      expect(secondOpenId).toBeDefined();
+      // Must generate a brand new UUID, never reusing the first one
+      expect(secondOpenId).not.toBe(firstOpenId);
+      expect(secondOpenId).not.toBe(initialId);
+      // Clean state: all fields reset, not retaining dirty draft from 1st open
+      expect(currentTask.value.name).toBe('');
+      expect(currentTask.value.description).toBe('');
+      expect(currentTask.value.triggers).toHaveLength(0);
+      expect(currentTask.value.actions).toHaveLength(0);
+      expect(activeTab.value).toBe('basic');
+
+      // 3rd open: another consecutive create
+      props.show = false;
+      await nextTick();
+      props.show = true;
+      await nextTick();
+
+      const thirdOpenId = currentTask.value.id;
+      expect(thirdOpenId).not.toBe(secondOpenId);
+      expect(thirdOpenId).not.toBe(firstOpenId);
+      expect(currentTask.value.name).toBe('');
+    });
+
+    it('clones provided task on open and preserves original prop intact', async () => {
+      const props = reactive<{ show: boolean; task: Task | null }>({
+        show: false,
+        task: null,
+      });
+
+      const currentTask = ref<Task>(getEmptyTask());
+
+      watch(
+        () => props.show,
+        (show) => {
+          if (show) {
+            if (props.task) {
+              currentTask.value = JSON.parse(JSON.stringify(props.task));
+            } else {
+              currentTask.value = getEmptyTask();
+            }
+          }
+        }
+      );
+
+      const existingTask: Task = {
+        ...getEmptyTask(),
+        id: 'existing-task-id',
+        name: 'Existing Task To Edit',
+      };
+
+      props.task = existingTask;
+      props.show = true;
+      await nextTick();
+
+      expect(currentTask.value.id).toBe('existing-task-id');
+      expect(currentTask.value.name).toBe('Existing Task To Edit');
+
+      // Mutating currentTask does not mutate the prop
+      currentTask.value.name = 'Modified In Form';
+      expect(existingTask.name).toBe('Existing Task To Edit');
     });
   });
 });

@@ -1,8 +1,13 @@
+<script lang="ts">
+export { parseDate } from '../../types/task';
+</script>
+
 <script setup lang="ts">
-import { NSelect, NInputNumber, NInput, NCheckboxGroup, NCheckbox, NButton, NSwitch } from 'naive-ui';
+import { ref } from 'vue';
+import { NSelect, NInputNumber, NInput, NDatePicker, NCheckboxGroup, NCheckbox, NButton, NSwitch } from 'naive-ui';
 import { Plus, Trash2 } from 'lucide-vue-next';
 import type { Trigger, Weekday } from '../../types/task';
-import { getTriggerType } from '../../types/task';
+import { getTriggerType, parseDate } from '../../types/task';
 
 const props = defineProps<{
   triggers: Trigger[];
@@ -30,6 +35,64 @@ const dayOptions: { label: string; value: Weekday }[] = [
   { label: '周六', value: 'Sat' },
   { label: '周日', value: 'Sun' },
 ];
+
+const intervalUnitOptions = [
+  { label: '秒', value: 1 },
+  { label: '分钟', value: 60 },
+  { label: '小时', value: 3600 },
+];
+
+const intervalUnits = ref<Record<string, number>>({});
+
+function getIntervalSecs(trigger: Trigger): number {
+  if (typeof trigger.kind === 'object' && 'Interval' in trigger.kind) {
+    return trigger.kind.Interval.interval_secs ?? trigger.kind.Interval.seconds ?? 60;
+  }
+  return 60;
+}
+
+function getIntervalUnit(trigger: Trigger): number {
+  if (intervalUnits.value[trigger.id]) {
+    return intervalUnits.value[trigger.id];
+  }
+  const totalSecs = getIntervalSecs(trigger);
+  if (totalSecs >= 3600 && totalSecs % 3600 === 0) {
+    return 3600;
+  }
+  if (totalSecs >= 60 && totalSecs % 60 === 0) {
+    return 60;
+  }
+  return 1;
+}
+
+function getDisplayIntervalValue(trigger: Trigger): number {
+  const totalSecs = getIntervalSecs(trigger);
+  const unit = getIntervalUnit(trigger);
+  return Math.max(1, Math.round(totalSecs / unit));
+}
+
+function setIntervalSecs(trigger: Trigger, secs: number) {
+  if (typeof trigger.kind === 'object' && 'Interval' in trigger.kind) {
+    trigger.kind.Interval.interval_secs = secs;
+    if ('seconds' in trigger.kind.Interval) {
+      trigger.kind.Interval.seconds = secs;
+    }
+  }
+}
+
+function onIntervalValueChange(trigger: Trigger, val: number | null) {
+  const unit = getIntervalUnit(trigger);
+  const inputVal = val && val > 0 ? val : 1;
+  const totalSecs = inputVal * unit;
+  setIntervalSecs(trigger, totalSecs);
+}
+
+function onIntervalUnitChange(trigger: Trigger, newUnit: number) {
+  const currentDisplayVal = getDisplayIntervalValue(trigger);
+  intervalUnits.value[trigger.id] = newUnit;
+  const totalSecs = currentDisplayVal * newUnit;
+  setIntervalSecs(trigger, totalSecs);
+}
 
 function addTrigger() {
   const newTrigger: Trigger = {
@@ -81,16 +144,6 @@ function changeKindType(trigger: Trigger, type: string) {
     };
   } else if (type === 'AgentStarted') {
     trigger.kind = 'AgentStarted';
-  }
-}
-
-function onIntervalChange(trigger: Trigger, val: number | null) {
-  const secs = val && val > 0 ? val : 60;
-  if (typeof trigger.kind === 'object' && 'Interval' in trigger.kind) {
-    trigger.kind.Interval.interval_secs = secs;
-    if ('seconds' in trigger.kind.Interval) {
-      trigger.kind.Interval.seconds = secs;
-    }
   }
 }
 
@@ -154,13 +207,20 @@ function formatIntervalPreview(sec: number): string {
       <div v-if="typeof tr.kind === 'object' && 'Interval' in tr.kind" class="flex items-center gap-2 text-xs flex-wrap">
         <span class="text-slate-500">每隔</span>
         <NInputNumber
-          :value="tr.kind.Interval.interval_secs ?? tr.kind.Interval.seconds ?? 60"
+          :value="getDisplayIntervalValue(tr)"
           size="small"
           :min="1"
-          class="w-28"
-          @update:value="onIntervalChange(tr, $event)"
+          class="w-24"
+          @update:value="onIntervalValueChange(tr, $event)"
         />
-        <span class="text-slate-500">秒执行一次</span>
+        <NSelect
+          :value="getIntervalUnit(tr)"
+          :options="intervalUnitOptions"
+          size="small"
+          class="w-24"
+          @update:value="onIntervalUnitChange(tr, $event)"
+        />
+        <span class="text-slate-500">执行一次</span>
         <span class="text-slate-400 dark:text-zinc-500">
           ({{ formatIntervalPreview(tr.kind.Interval.interval_secs ?? tr.kind.Interval.seconds ?? 60) }})
         </span>
@@ -221,11 +281,12 @@ function formatIntervalPreview(sec: number): string {
 
       <!-- Once Editor -->
       <div v-if="typeof tr.kind === 'object' && 'Once' in tr.kind" class="text-xs space-y-1">
-        <label class="block text-slate-500 dark:text-zinc-400">单次触发时间 (ISO 8601, 如：2026-10-01T12:00:00Z)</label>
-        <NInput
-          v-model:value="tr.kind.Once.fire_at"
-          placeholder="2026-10-01T12:00:00Z"
-          size="small"
+        <label class="block text-slate-500 dark:text-zinc-400">单次触发时间</label>
+        <NDatePicker
+          type="datetime"
+          :value="parseDate(tr.kind.Once.fire_at)"
+          @update:value="tr.kind.Once.fire_at = new Date($event).toISOString()"
+          clearable
         />
       </div>
 
