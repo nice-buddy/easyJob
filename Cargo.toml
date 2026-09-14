@@ -8,6 +8,7 @@ publish = false
 members = [
     ".",
     "crates/*",
+    "apps/*",
 ]
 resolver = "2"
 
@@ -31,8 +32,14 @@ easyjob-executor = { path = "crates/executor" }
 easyjob-persistence = { path = "crates/persistence" }
 easyjob-platform = { path = "crates/platform" }
 easyjob-scheduler = { path = "crates/scheduler" }
+easyjob-logging = { path = "crates/logging" }
+easyjob-ipc = { path = "crates/ipc" }
+easyjob-agent = { path = "apps/agent" }
+tempfile = "3"
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
 

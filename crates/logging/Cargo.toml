@@ -1,0 +1,13 @@
+[package]
+name = "easyjob-logging"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+easyjob-common = { path = "../common" }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt", "ansi"] }
+tracing-appender = "0.2.3"
+
+[dev-dependencies]
+tempfile = "3.10"

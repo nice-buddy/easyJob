@@ -1,0 +1,22 @@
+[package]
+name = "easyjob-ipc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+easyjob-common = { path = "../common" }
+easyjob-domain = { path = "../domain" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
+futures = { package = "futures-util", version = "0.3", default-features = false, features = ["sink", "std"] }
+tracing.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
