@@ -4,22 +4,20 @@ import type { ExecutionOutputPayload } from '../types/execution';
 export async function onExecutionStarted(
   cb: (payload: { execution_id: string; task_id: string }) => void
 ): Promise<UnlistenFn> {
-  return await listen('execution.started', (e) => cb(e.payload as any));
+  return await listen<{ execution_id: string; task_id: string }>('execution.started', (e) => cb(e.payload));
 }
 
 export async function onExecutionOutput(
   cb: (payload: ExecutionOutputPayload) => void
 ): Promise<UnlistenFn> {
-  return await listen('execution.output', (e) => cb(e.payload as any));
+  return await listen<ExecutionOutputPayload>('execution.output', (e) => cb(e.payload));
 }
 
 export async function onExecutionFinished(
-  cb: (payload: {
-    execution_id: string;
-    task_id: string;
-    status: string;
-    exit_code: number | null;
-  }) => void
+  cb: (payload: { execution_id: string; task_id: string; status: string; exit_code: number | null }) => void
 ): Promise<UnlistenFn> {
-  return await listen('execution.finished', (e) => cb(e.payload as any));
+  return await listen<{ execution_id: string; task_id: string; status: string; exit_code: number | null }>(
+    'execution.finished',
+    (e) => cb(e.payload)
+  );
 }

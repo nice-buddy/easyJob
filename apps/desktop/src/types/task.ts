@@ -13,17 +13,31 @@ export interface RetryPolicy {
 export interface ExecutionPolicy {
   concurrency_policy: ConcurrencyPolicy;
   missed_run_policy: MissedRunPolicy;
+  retry_policy: RetryPolicy;
   timeout_secs: number | null;
-  max_retries: number;
-  retry_policy?: RetryPolicy;
 }
 
+export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
+
 export type TriggerKind =
-  | { type: 'Once'; datetime: string; fire_at?: string }
-  | { type: 'Interval'; seconds: number; interval_secs?: number; start_at?: string | null }
-  | { type: 'Daily'; time: string; timezone: string }
-  | { type: 'Weekly'; days_of_week: number[]; time: string; timezone: string }
-  | { type: 'AgentStarted' };
+  | { Once: { fire_at: string } }
+  | { Interval: { seconds: number; interval_secs?: number; start_at?: string | null } | { interval_secs: number; seconds?: number; start_at?: string | null } }
+  | { Daily: { time: string; timezone: string } }
+  | { Weekly: { days_of_week: Weekday[]; time: string; timezone: string } }
+  | 'AgentStarted';
+
+export function getTriggerType(
+  kind: TriggerKind
+): 'Once' | 'Interval' | 'Daily' | 'Weekly' | 'AgentStarted' {
+  if (typeof kind === 'string') {
+    return kind;
+  }
+  if ('Once' in kind) return 'Once';
+  if ('Interval' in kind) return 'Interval';
+  if ('Daily' in kind) return 'Daily';
+  if ('Weekly' in kind) return 'Weekly';
+  throw new Error(`Unknown trigger kind: ${JSON.stringify(kind)}`);
+}
 
 export interface Trigger {
   id: TriggerId;
@@ -35,8 +49,20 @@ export interface Trigger {
 }
 
 export type ActionKind =
-  | { type: 'ExecuteShell'; command: string }
-  | { type: 'ExecuteProgram'; program: string; args: string[] };
+  | { ExecuteProgram: { program: string; args: string[] } }
+  | { ExecuteShell: { command: string } }
+  | { ExecutePowerShell: { script: string; no_profile: boolean } }
+  | { ExecuteCmd: { command: string } };
+
+export function getActionType(
+  kind: ActionKind
+): 'ExecuteProgram' | 'ExecuteShell' | 'ExecutePowerShell' | 'ExecuteCmd' {
+  if ('ExecuteProgram' in kind) return 'ExecuteProgram';
+  if ('ExecuteShell' in kind) return 'ExecuteShell';
+  if ('ExecutePowerShell' in kind) return 'ExecutePowerShell';
+  if ('ExecuteCmd' in kind) return 'ExecuteCmd';
+  throw new Error(`Unknown action kind: ${JSON.stringify(kind)}`);
+}
 
 export interface Action {
   id: ActionId;

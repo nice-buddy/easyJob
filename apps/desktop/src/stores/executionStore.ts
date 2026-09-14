@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import {
   listExecutions,
   cancelExecution as apiCancelExecution,
@@ -16,6 +17,9 @@ export const useExecutionStore = defineStore('executions', () => {
   const logs = ref<Record<ExecutionId, string[]>>({});
   const activeExecutionId = ref<ExecutionId | null>(null);
   const loading = ref(false);
+
+  let isListening = false;
+  let unlistenFns: UnlistenFn[] = [];
 
   async function loadExecutions(limit = 50) {
     loading.value = true;
@@ -38,18 +42,31 @@ export const useExecutionStore = defineStore('executions', () => {
   }
 
   // Setup event listeners
-  function initListeners() {
-    onExecutionStarted(() => {
+  async function initListeners() {
+    if (isListening) return;
+    isListening = true;
+
+    const unlistenStarted = await onExecutionStarted(() => {
       loadExecutions();
     });
 
-    onExecutionOutput((payload) => {
+    const unlistenOutput = await onExecutionOutput((payload) => {
       appendLog(payload.execution_id, payload.content);
     });
 
-    onExecutionFinished(() => {
+    const unlistenFinished = await onExecutionFinished(() => {
       loadExecutions();
     });
+
+    unlistenFns.push(unlistenStarted, unlistenOutput, unlistenFinished);
+  }
+
+  async function cleanupListeners() {
+    for (const unlisten of unlistenFns) {
+      unlisten();
+    }
+    unlistenFns = [];
+    isListening = false;
   }
 
   return {
@@ -61,5 +78,6 @@ export const useExecutionStore = defineStore('executions', () => {
     cancelExecution,
     appendLog,
     initListeners,
+    cleanupListeners,
   };
 });

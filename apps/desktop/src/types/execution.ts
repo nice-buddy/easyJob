@@ -4,7 +4,6 @@ export type ExecutionId = string;
 
 export type ExecutionStatus =
   | 'Queued'
-  | 'Pending'
   | 'Running'
   | 'Succeeded'
   | 'Failed'

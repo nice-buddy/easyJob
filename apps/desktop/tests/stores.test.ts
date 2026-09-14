@@ -5,7 +5,8 @@ import { useTaskStore } from '../src/stores/taskStore';
 import { useExecutionStore } from '../src/stores/executionStore';
 import * as tauriService from '../src/services/tauri';
 import * as eventsService from '../src/services/events';
-import type { Task } from '../src/types/task';
+import type { Task, TriggerKind, ActionKind } from '../src/types/task';
+import { getTriggerType, getActionType } from '../src/types/task';
 import type { Execution, ExecutionOutputPayload } from '../src/types/execution';
 import type { AgentStatus } from '../src/types/agent';
 
@@ -31,6 +32,36 @@ describe('Pinia Stores', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
+  });
+
+  describe('Task Type Models & Helpers', () => {
+    it('correctly discriminates all TriggerKind variants', () => {
+      const onceTrigger: TriggerKind = { Once: { fire_at: '2026-09-14T10:00:00Z' } };
+      const intervalTrigger1: TriggerKind = { Interval: { seconds: 60 } };
+      const intervalTrigger2: TriggerKind = { Interval: { interval_secs: 120, start_at: null } };
+      const dailyTrigger: TriggerKind = { Daily: { time: '09:00:00', timezone: 'UTC' } };
+      const weeklyTrigger: TriggerKind = { Weekly: { days_of_week: ['Mon', 'Fri'], time: '09:00:00', timezone: 'UTC' } };
+      const agentStartedTrigger: TriggerKind = 'AgentStarted';
+
+      expect(getTriggerType(onceTrigger)).toBe('Once');
+      expect(getTriggerType(intervalTrigger1)).toBe('Interval');
+      expect(getTriggerType(intervalTrigger2)).toBe('Interval');
+      expect(getTriggerType(dailyTrigger)).toBe('Daily');
+      expect(getTriggerType(weeklyTrigger)).toBe('Weekly');
+      expect(getTriggerType(agentStartedTrigger)).toBe('AgentStarted');
+    });
+
+    it('correctly discriminates all ActionKind variants', () => {
+      const progAction: ActionKind = { ExecuteProgram: { program: 'node', args: ['-v'] } };
+      const shellAction: ActionKind = { ExecuteShell: { command: 'echo 1' } };
+      const psAction: ActionKind = { ExecutePowerShell: { script: 'Write-Host 1', no_profile: true } };
+      const cmdAction: ActionKind = { ExecuteCmd: { command: 'dir' } };
+
+      expect(getActionType(progAction)).toBe('ExecuteProgram');
+      expect(getActionType(shellAction)).toBe('ExecuteShell');
+      expect(getActionType(psAction)).toBe('ExecutePowerShell');
+      expect(getActionType(cmdAction)).toBe('ExecuteCmd');
+    });
   });
 
   describe('useAgentStore', () => {
@@ -76,13 +107,33 @@ describe('Pinia Stores', () => {
       name: 'Daily Database Backup',
       description: 'Backs up SQLite db daily',
       enabled: true,
-      triggers: [],
-      actions: [],
+      triggers: [
+        {
+          id: 'trig-1',
+          task_id: 'task-1',
+          enabled: true,
+          kind: { Daily: { time: '02:00:00', timezone: 'UTC' } },
+          created_at: '2026-09-14T00:00:00Z',
+          updated_at: '2026-09-14T00:00:00Z',
+        },
+      ],
+      actions: [
+        {
+          id: 'act-1',
+          task_id: 'task-1',
+          sequence: 1,
+          enabled: true,
+          kind: { ExecuteShell: { command: 'echo backup' } },
+        },
+      ],
       execution_policy: {
         concurrency_policy: 'SkipIfRunning',
         missed_run_policy: 'RunOnce',
+        retry_policy: {
+          max_retries: 1,
+          delay_secs: 5,
+        },
         timeout_secs: 300,
-        max_retries: 1,
       },
       working_directory: null,
       environment: {},
@@ -101,8 +152,11 @@ describe('Pinia Stores', () => {
       execution_policy: {
         concurrency_policy: 'AllowParallel',
         missed_run_policy: 'Skip',
+        retry_policy: {
+          max_retries: 0,
+          delay_secs: 0,
+        },
         timeout_secs: null,
-        max_retries: 0,
       },
       working_directory: null,
       environment: {},
@@ -250,32 +304,42 @@ describe('Pinia Stores', () => {
       expect(store.logs['exec-2']).toEqual(['other exec log\n']);
     });
 
-    it('initializes listeners and responds to events', async () => {
+    it('initializes listeners, guards against duplicate registration, and cleans up', async () => {
       let startedCallback: ((payload: any) => void) | undefined;
       let outputCallback: ((payload: ExecutionOutputPayload) => void) | undefined;
       let finishedCallback: ((payload: any) => void) | undefined;
 
+      const unlistenStarted = vi.fn();
+      const unlistenOutput = vi.fn();
+      const unlistenFinished = vi.fn();
+
       vi.mocked(eventsService.onExecutionStarted).mockImplementation(async (cb) => {
         startedCallback = cb;
-        return () => {};
+        return unlistenStarted;
       });
       vi.mocked(eventsService.onExecutionOutput).mockImplementation(async (cb) => {
         outputCallback = cb;
-        return () => {};
+        return unlistenOutput;
       });
       vi.mocked(eventsService.onExecutionFinished).mockImplementation(async (cb) => {
         finishedCallback = cb;
-        return () => {};
+        return unlistenFinished;
       });
 
       vi.mocked(tauriService.listExecutions).mockResolvedValue([sampleExecution]);
 
       const store = useExecutionStore();
-      store.initListeners();
+      await store.initListeners();
 
-      expect(eventsService.onExecutionStarted).toHaveBeenCalled();
-      expect(eventsService.onExecutionOutput).toHaveBeenCalled();
-      expect(eventsService.onExecutionFinished).toHaveBeenCalled();
+      expect(eventsService.onExecutionStarted).toHaveBeenCalledTimes(1);
+      expect(eventsService.onExecutionOutput).toHaveBeenCalledTimes(1);
+      expect(eventsService.onExecutionFinished).toHaveBeenCalledTimes(1);
+
+      // Duplicate initListeners call should be ignored by guard
+      await store.initListeners();
+      expect(eventsService.onExecutionStarted).toHaveBeenCalledTimes(1);
+      expect(eventsService.onExecutionOutput).toHaveBeenCalledTimes(1);
+      expect(eventsService.onExecutionFinished).toHaveBeenCalledTimes(1);
 
       // Trigger started event
       expect(startedCallback).toBeDefined();
@@ -301,6 +365,18 @@ describe('Pinia Stores', () => {
         exit_code: 0,
       });
       expect(tauriService.listExecutions).toHaveBeenCalledTimes(2);
+
+      // Cleanup listeners
+      await store.cleanupListeners();
+      expect(unlistenStarted).toHaveBeenCalledTimes(1);
+      expect(unlistenOutput).toHaveBeenCalledTimes(1);
+      expect(unlistenFinished).toHaveBeenCalledTimes(1);
+
+      // After cleanup, initListeners can register again
+      await store.initListeners();
+      expect(eventsService.onExecutionStarted).toHaveBeenCalledTimes(2);
+      expect(eventsService.onExecutionOutput).toHaveBeenCalledTimes(2);
+      expect(eventsService.onExecutionFinished).toHaveBeenCalledTimes(2);
     });
   });
 });
