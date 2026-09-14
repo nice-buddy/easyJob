@@ -63,7 +63,9 @@ export const useExecutionStore = defineStore('executions', () => {
 
   async function cleanupListeners() {
     for (const unlisten of unlistenFns) {
-      unlisten();
+      if (typeof unlisten === 'function') {
+        unlisten();
+      }
     }
     unlistenFns = [];
     isListening = false;
