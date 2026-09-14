@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use easyjob_common::{Result, TaskId};
+use easyjob_common::{ExecutionId, Result, TaskId};
 use easyjob_domain::execution::{Execution, ExecutionStatus};
 use easyjob_domain::task::Task;
 use easyjob_domain::trigger::TriggerKind;
@@ -12,10 +12,11 @@ use easyjob_persistence::execution_repo::{ExecutionRepository, SqliteExecutionRe
 use easyjob_persistence::recovery::recover_dangling_executions;
 use easyjob_persistence::task_repo::{SqliteTaskRepository, TaskRepository};
 use easyjob_scheduler::scheduler::{Scheduler, SchedulerCommand, TriggerEvent};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -30,6 +31,7 @@ pub struct AgentService {
     ipc_path: PathBuf,
     start_time: Instant,
     shutdown_notify: Arc<Notify>,
+    active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
 }
 
 impl AgentService {
@@ -72,6 +74,7 @@ impl AgentService {
         }
 
         let shutdown_notify = Arc::new(Notify::new());
+        let active_executions = Arc::new(Mutex::new(HashMap::new()));
         let start_time = Instant::now();
 
         let handler = Arc::new(AgentRpcHandler {
@@ -81,6 +84,7 @@ impl AgentService {
             scheduler_tx: scheduler_tx.clone(),
             start_time,
             shutdown_notify: shutdown_notify.clone(),
+            active_executions: active_executions.clone(),
         });
 
         let ipc_server = IpcServer::bind(ipc_path, handler).await?;
@@ -96,6 +100,7 @@ impl AgentService {
             ipc_path: ipc_path.to_path_buf(),
             start_time,
             shutdown_notify,
+            active_executions,
         })
     }
 
@@ -111,6 +116,10 @@ impl AgentService {
         self.exec_manager.clone()
     }
 
+    pub fn active_executions(&self) -> Arc<Mutex<HashMap<ExecutionId, CancellationToken>>> {
+        self.active_executions.clone()
+    }
+
     pub fn ipc_path(&self) -> &Path {
         &self.ipc_path
     }
@@ -124,6 +133,7 @@ impl AgentService {
         let task_repo = self.task_repo.clone();
         let exec_repo = self.exec_repo.clone();
         let exec_manager = self.exec_manager.clone();
+        let active_executions = self.active_executions.clone();
         let cancel_token = CancellationToken::new();
         let dispatcher_cancel = cancel_token.clone();
         let exec_cancel_token = cancel_token.clone();
@@ -165,6 +175,7 @@ impl AgentService {
 
                         let e_repo = exec_repo.clone();
                         let e_manager = exec_manager.clone();
+                        let active_execs = active_executions.clone();
                         let ev_tx = event_tx.clone();
                         let action_cancel = exec_cancel_token.child_token();
 
@@ -182,6 +193,11 @@ impl AgentService {
                                 e_manager.release_slot(&task.id).await;
                                 return;
                             }
+
+                            active_execs
+                                .lock()
+                                .await
+                                .insert(exec.id, action_cancel.clone());
 
                             let _ = ev_tx.send(IpcEvent::new(
                                 "execution.started",
@@ -278,6 +294,7 @@ impl AgentService {
                                 }),
                             ));
 
+                            active_execs.lock().await.remove(&exec.id);
                             e_manager.release_slot(&task.id).await;
                         });
                     }
@@ -318,12 +335,12 @@ impl AgentService {
 
 pub struct AgentRpcHandler {
     pub(crate) task_repo: Arc<SqliteTaskRepository>,
-    #[allow(dead_code)]
     pub(crate) exec_repo: Arc<SqliteExecutionRepository>,
     pub(crate) exec_manager: Arc<ExecutionManager>,
     pub(crate) scheduler_tx: mpsc::Sender<SchedulerCommand>,
     pub(crate) start_time: Instant,
     pub(crate) shutdown_notify: Arc<Notify>,
+    pub(crate) active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
 }
 
 impl AgentRpcHandler {
@@ -460,6 +477,72 @@ impl RequestHandler for AgentRpcHandler {
                     Err(e) => {
                         IpcResponse::error(req.id, format!("Failed to send trigger command: {}", e))
                     }
+                }
+            }
+            "execution.list" => {
+                let limit = if req.params.is_object() && req.params.get("limit").is_some() {
+                    req.params["limit"].as_u64().unwrap_or(50) as u32
+                } else if req.params.is_number() {
+                    req.params.as_u64().unwrap_or(50) as u32
+                } else {
+                    50
+                };
+                match self.exec_repo.find_recent_runs(limit).await {
+                    Ok(runs) => match serde_json::to_value(runs) {
+                        Ok(v) => IpcResponse::success(req.id, v),
+                        Err(e) => IpcResponse::error(req.id, e.to_string()),
+                    },
+                    Err(e) => IpcResponse::error(req.id, e.to_string()),
+                }
+            }
+            "execution.get" => {
+                let id_val = if req.params.is_object() && req.params.get("id").is_some() {
+                    &req.params["id"]
+                } else {
+                    &req.params
+                };
+                let id: ExecutionId = match serde_json::from_value(id_val.clone()) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return IpcResponse::error(
+                            req.id,
+                            format!("Invalid execution id parameter: {}", e),
+                        )
+                    }
+                };
+                match self.exec_repo.find_run_by_id(&id).await {
+                    Ok(Some(run)) => match serde_json::to_value(run) {
+                        Ok(v) => IpcResponse::success(req.id, v),
+                        Err(e) => IpcResponse::error(req.id, e.to_string()),
+                    },
+                    Ok(None) => IpcResponse::error(req.id, format!("Execution '{}' not found", id)),
+                    Err(e) => IpcResponse::error(req.id, e.to_string()),
+                }
+            }
+            "execution.cancel" => {
+                let id_val = if req.params.is_object() && req.params.get("id").is_some() {
+                    &req.params["id"]
+                } else {
+                    &req.params
+                };
+                let id: ExecutionId = match serde_json::from_value(id_val.clone()) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return IpcResponse::error(
+                            req.id,
+                            format!("Invalid execution id parameter: {}", e),
+                        )
+                    }
+                };
+                let active = self.active_executions.lock().await;
+                if let Some(token) = active.get(&id) {
+                    token.cancel();
+                    IpcResponse::success(req.id, serde_json::json!(true))
+                } else {
+                    IpcResponse::error(
+                        req.id,
+                        format!("Execution '{}' is not actively running", id),
+                    )
                 }
             }
             _ => IpcResponse::error(req.id, format!("Method '{}' not found", req.method)),

@@ -1,10 +1,8 @@
 use easyjob_common::{Error, Result};
-use easyjob_ipc::client::IpcClient;
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Debug)]
 pub enum LockOutcome {
@@ -29,7 +27,7 @@ impl SingleInstanceLock {
         &self.path
     }
 
-    pub async fn acquire(lock_path: &Path, ipc_path: &Path) -> Result<LockOutcome> {
+    pub async fn acquire(lock_path: &Path, _ipc_path: &Path) -> Result<LockOutcome> {
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent).map_err(Error::Io)?;
         }
@@ -51,55 +49,15 @@ impl SingleInstanceLock {
                 }))
             }
             Err(e) if is_lock_contended(&e) => {
-                // Lock held by another process: probe IPC endpoint
-                if probe_agent_status(ipc_path).await {
-                    return Ok(LockOutcome::AlreadyRunning);
-                }
-
-                // Probe failed -> Stale lock recovery
-                warn!("Stale lock detected at {:?}; recovering", lock_path);
-                drop(file);
-                let _ = std::fs::remove_file(lock_path);
-
-                let recovered_file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(lock_path)
-                    .map_err(Error::Io)?;
-
-                recovered_file.try_lock_exclusive().map_err(|err| {
-                    Error::Other(format!("Failed to acquire recovered lock: {}", err))
-                })?;
-
                 info!(
-                    "Successfully recovered and acquired single-instance lock at {:?}",
+                    "Another easyjob-agent instance is already running (lock contended at {:?})",
                     lock_path
                 );
-                Ok(LockOutcome::Acquired(Self {
-                    _file: recovered_file,
-                    path: lock_path.to_path_buf(),
-                }))
+                Ok(LockOutcome::AlreadyRunning)
             }
             Err(e) => Err(Error::Io(e)),
         }
     }
-}
-
-async fn probe_agent_status(ipc_path: &Path) -> bool {
-    let connect_timeout = Duration::from_millis(500);
-    let rpc_timeout = Duration::from_millis(500);
-
-    let client = match tokio::time::timeout(connect_timeout, IpcClient::connect(ipc_path)).await {
-        Ok(Ok(client)) => client,
-        _ => return false,
-    };
-
-    client
-        .call_timeout("agent.status", serde_json::json!({}), rpc_timeout)
-        .await
-        .is_ok()
 }
 
 fn is_lock_contended(err: &std::io::Error) -> bool {

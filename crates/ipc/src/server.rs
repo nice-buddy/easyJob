@@ -150,11 +150,14 @@ impl IpcServer {
     pub async fn run(self) -> Result<()> {
         let inner = self.inner;
 
-        // Spawn event broadcast listener
-        let broadcast_inner = inner.clone();
-        let mut event_rx = broadcast_inner.event_tx.subscribe();
-        let broadcast_handle = tokio::spawn(async move {
+        // Spawn event broadcast listener with Weak reference to allow clean server drop
+        let weak_inner = Arc::downgrade(&inner);
+        let mut event_rx = inner.event_tx.subscribe();
+        tokio::spawn(async move {
             while let Ok(event) = event_rx.recv().await {
+                let Some(broadcast_inner) = weak_inner.upgrade() else {
+                    break;
+                };
                 if let Ok(json) = serde_json::to_string(&event) {
                     let client_senders: Vec<(u64, mpsc::Sender<String>)> = {
                         let clients = broadcast_inner.clients.lock().await;
@@ -162,8 +165,17 @@ impl IpcServer {
                     };
                     let mut dead_clients = Vec::new();
                     for (id, tx) in client_senders {
-                        if tx.try_send(json.clone()).is_err() {
-                            dead_clients.push(id);
+                        match tx.try_send(json.clone()) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                dead_clients.push(id);
+                            }
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                tracing::warn!(
+                                    "Client {} buffer full, dropping broadcast frame",
+                                    id
+                                );
+                            }
                         }
                     }
                     if !dead_clients.is_empty() {
@@ -228,7 +240,6 @@ impl IpcServer {
             }
         }
 
-        broadcast_handle.abort();
         Ok(())
     }
 }

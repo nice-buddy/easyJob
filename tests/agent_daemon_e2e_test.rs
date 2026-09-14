@@ -217,7 +217,6 @@ fn test_agent_binary_cli_help() {
 }
 
 #[tokio::test]
-#[ignore = "skipping per user request: requires full OS process-level IPC permissions"]
 async fn test_agent_binary_already_running_exits_cleanly() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("easyjob.db");
@@ -253,10 +252,11 @@ async fn test_agent_binary_already_running_exits_cleanly() {
 
     // Launch binary pointing to same data-dir; it should detect already running and exit 0
     let binary_path = agent_binary_path();
-    let output = Command::new(binary_path)
+    let output = tokio::process::Command::new(binary_path)
         .arg("--data-dir")
         .arg(dir.path())
         .output()
+        .await
         .expect("Failed to execute second agent binary instance");
 
     assert!(

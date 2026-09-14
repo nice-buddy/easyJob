@@ -283,6 +283,21 @@ async fn test_execution_repo_crud_and_append_output() {
     let c1: String = rows[0].get("content");
     assert_eq!(s1, "stdout");
     assert_eq!(c1, "line 1\n");
+
+    // Test find_recent_runs
+    let mut exec2 = Execution::new(task_id, None, Some(Utc::now()));
+    exec2.status = ExecutionStatus::Running;
+    exec2.started_at = Utc::now() + chrono::Duration::seconds(10);
+    exec_repo.create_run(&exec2).await.unwrap();
+
+    let recent = exec_repo.find_recent_runs(10).await.unwrap();
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0].id, exec2.id);
+    assert_eq!(recent[1].id, exec.id);
+
+    let limited = exec_repo.find_recent_runs(1).await.unwrap();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0].id, exec2.id);
     let s2: String = rows[1].get("stream");
     let c2: String = rows[1].get("content");
     assert_eq!(s2, "stderr");

@@ -144,6 +144,23 @@ async fn test_agent_service_lifecycle_and_rpc() {
     assert!(output_seen, "execution.output event was not received");
     assert!(finished_seen, "execution.finished event was not received");
 
+    // 6b. Verify execution.list and execution.get
+    let exec_list = client
+        .call("execution.list", serde_json::json!({ "limit": 10 }))
+        .await
+        .expect("execution.list failed");
+    let exec_arr = exec_list.as_array().expect("expected execution list array");
+    assert!(!exec_arr.is_empty());
+    let exec_id = exec_arr[0]["id"].as_str().expect("valid execution id");
+
+    let exec_item = client
+        .call("execution.get", serde_json::json!({ "id": exec_id }))
+        .await
+        .expect("execution.get failed");
+    assert_eq!(exec_item["id"], exec_id);
+    assert_eq!(exec_item["status"], "Succeeded");
+    assert_eq!(exec_item["exit_code"], 0);
+
     // 7. Delete task
     let delete_res = client
         .call("task.delete", serde_json::json!({ "id": task_id }))
@@ -189,6 +206,124 @@ async fn test_agent_service_global_concurrency_limit() {
     let client = IpcClient::connect(&socket_path)
         .await
         .expect("IpcClient::connect failed");
+
+    // Shut down cleanly
+    let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
+}
+
+#[tokio::test]
+async fn test_agent_service_execution_cancel() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("cancel_test.db");
+    let socket_path = dir.path().join("cancel_test.sock");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+
+    let service = AgentService::init(&db_url, &socket_path, 2)
+        .await
+        .expect("AgentService::init failed");
+    let service_handle = tokio::spawn(service.run());
+
+    let client = IpcClient::connect(&socket_path)
+        .await
+        .expect("IpcClient::connect failed");
+    let mut event_rx = client.subscribe();
+
+    let task_id = TaskId::new();
+    let action_id = ActionId::new();
+    let trigger_id = TriggerId::new();
+
+    #[cfg(target_os = "windows")]
+    let sleep_cmd = "powershell -Command Start-Sleep -Seconds 10".to_string();
+    #[cfg(not(target_os = "windows"))]
+    let sleep_cmd = "sleep 10".to_string();
+
+    let task = Task {
+        id: task_id,
+        name: "Long Running Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![Trigger {
+            id: trigger_id,
+            task_id,
+            enabled: true,
+            kind: TriggerKind::AgentStarted,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }],
+        actions: vec![Action {
+            id: action_id,
+            task_id,
+            sequence: 1,
+            enabled: true,
+            kind: ActionKind::ExecuteShell { command: sleep_cmd },
+        }],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    client
+        .call("task.save", serde_json::json!({ "task": task }))
+        .await
+        .expect("task.save failed");
+
+    client
+        .call("task.trigger_now", serde_json::json!({ "id": task_id }))
+        .await
+        .expect("task.trigger_now failed");
+
+    // Wait for execution.started
+    let mut execution_id = None;
+    let timeout_duration = Duration::from_secs(5);
+    let start_instant = std::time::Instant::now();
+    while start_instant.elapsed() < timeout_duration {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.started" {
+                execution_id = Some(event.data["execution_id"].as_str().unwrap().to_string());
+                break;
+            }
+        }
+    }
+    let exec_id = execution_id.expect("expected execution.started event");
+
+    // Call execution.cancel
+    let cancel_res = client
+        .call("execution.cancel", serde_json::json!({ "id": exec_id }))
+        .await
+        .expect("execution.cancel failed");
+    assert_eq!(cancel_res, serde_json::json!(true));
+
+    // Wait for execution.finished with Cancelled status
+    let mut cancelled_seen = false;
+    let start_instant = std::time::Instant::now();
+    while start_instant.elapsed() < timeout_duration {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.finished" {
+                assert_eq!(event.data["status"], "Cancelled");
+                cancelled_seen = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        cancelled_seen,
+        "execution.finished Cancelled event not received"
+    );
+
+    // Verify execution.get confirms status == "Cancelled"
+    let fetched = client
+        .call("execution.get", serde_json::json!({ "id": exec_id }))
+        .await
+        .expect("execution.get failed");
+    assert_eq!(fetched["status"], "Cancelled");
 
     // Shut down cleanly
     let _ = client.call("agent.shutdown", serde_json::json!({})).await;

@@ -72,25 +72,18 @@ async fn test_second_lock_returns_already_running_when_ipc_active() {
 }
 
 #[tokio::test]
-async fn test_stale_lock_recovery_when_ipc_dead() {
+async fn test_orphaned_lock_file_acquired_successfully() {
     let dir = tempdir().unwrap();
     let lock_path = dir.path().join("agent.lock");
     let ipc_path = dir.path().join("agent.sock");
 
-    // First acquire lock, but DO NOT run any IPC server (simulating dead/hung prior process)
-    let lock1 = SingleInstanceLock::acquire(&lock_path, &ipc_path)
-        .await
-        .expect("Initial acquire should succeed");
-    assert!(matches!(lock1, LockOutcome::Acquired(_)));
+    // Simulate an orphaned lock file left on disk after prior daemon exited/crashed
+    std::fs::write(&lock_path, "stale pid").unwrap();
 
-    // Second lock attempt: lock is held, but IPC probe fails (no server listening).
-    // It should recover the stale lock and acquire successfully.
-    let lock2 = SingleInstanceLock::acquire(&lock_path, &ipc_path)
+    // New agent startup: lock file exists on disk, but kernel lock is released.
+    // Acquire must succeed cleanly without contention.
+    let lock = SingleInstanceLock::acquire(&lock_path, &ipc_path)
         .await
-        .expect("Stale lock recovery should succeed");
-    assert!(matches!(lock2, LockOutcome::Acquired(_)));
-
-    // Clean up
-    drop(lock1);
-    drop(lock2);
+        .expect("Orphaned lock file should be acquired successfully");
+    assert!(matches!(lock, LockOutcome::Acquired(_)));
 }
