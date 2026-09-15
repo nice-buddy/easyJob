@@ -10,10 +10,18 @@ import { useTaskStore } from '../src/stores/taskStore';
 import { useExecutionStore } from '../src/stores/executionStore';
 import * as tauriService from '../src/services/tauri';
 import * as eventsService from '../src/services/events';
+import * as autostartService from '../src/services/autostart';
+import * as pluginAutostart from '@tauri-apps/plugin-autostart';
 import type { Task } from '../src/types/task';
 import type { Execution } from '../src/types/execution';
 import { getStatusLabel, getStatusTagType } from '../src/types/execution';
 import { isWindowsPlatform } from '../src/types/task';
+
+vi.mock('@tauri-apps/plugin-autostart', () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 vi.mock('../src/services/tauri', () => ({
   getAgentStatus: vi.fn(),
@@ -33,8 +41,22 @@ vi.mock('../src/services/events', () => ({
   onExecutionFinished: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
+const mockStorage: Record<string, string> = {};
+if (typeof globalThis.localStorage === 'undefined') {
+  globalThis.localStorage = {
+    getItem: (key: string) => mockStorage[key] ?? null,
+    setItem: (key: string, val: string) => { mockStorage[key] = String(val); },
+    removeItem: (key: string) => { delete mockStorage[key]; },
+    clear: () => { Object.keys(mockStorage).forEach((k) => delete mockStorage[k]); },
+    length: 0,
+    key: () => null,
+  } as Storage;
+}
+
 describe('Desktop UI Views & Components', () => {
   beforeEach(() => {
+    localStorage.clear();
+
     setActivePinia(createPinia());
     vi.clearAllMocks();
   });
@@ -358,6 +380,40 @@ describe('Desktop UI Views & Components', () => {
       await agentStore.fetchStatus();
       expect(agentStore.isConnected).toBe(true);
       expect(tauriService.getAgentStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('checks autostart status via autostart service', async () => {
+      vi.mocked(pluginAutostart.isEnabled).mockResolvedValueOnce(true);
+      const enabled = await autostartService.isAutostartEnabled();
+      expect(enabled).toBe(true);
+      expect(pluginAutostart.isEnabled).toHaveBeenCalledTimes(1);
+
+      vi.mocked(pluginAutostart.isEnabled).mockRejectedValueOnce(new Error('Tauri not ready'));
+      const fallback = await autostartService.isAutostartEnabled();
+      expect(fallback).toBe(false);
+    });
+
+    it('toggles autostart status with enable and disable', async () => {
+      await autostartService.setAutostart(true);
+      expect(pluginAutostart.enable).toHaveBeenCalledTimes(1);
+
+      await autostartService.setAutostart(false);
+      expect(pluginAutostart.disable).toHaveBeenCalledTimes(1);
+    });
+
+    it('initializes autostart to enabled by default on first launch', async () => {
+      expect(localStorage.getItem('easyjob_autostart_initialized')).toBeNull();
+
+      const res = await autostartService.initAutostartDefault();
+      expect(res).toBe(true);
+      expect(pluginAutostart.enable).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem('easyjob_autostart_initialized')).toBe('true');
+
+      // Subsequent runs check isEnabled instead of re-enabling
+      vi.mocked(pluginAutostart.isEnabled).mockResolvedValueOnce(false);
+      const secondRun = await autostartService.initAutostartDefault();
+      expect(secondRun).toBe(false);
+      expect(pluginAutostart.isEnabled).toHaveBeenCalledTimes(1);
     });
   });
 
