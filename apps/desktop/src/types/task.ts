@@ -64,6 +64,15 @@ export function getActionType(
   throw new Error(`Unknown action kind: ${JSON.stringify(kind)}`);
 }
 
+export function isWindowsPlatform(): boolean {
+  if (typeof navigator !== 'undefined') {
+    const userAgent = navigator.userAgent || '';
+    const platform = (navigator as any).userAgentData?.platform || navigator.platform || '';
+    return /win/i.test(userAgent) || /win/i.test(platform);
+  }
+  return false;
+}
+
 export interface Action {
   id: ActionId;
   task_id: TaskId;

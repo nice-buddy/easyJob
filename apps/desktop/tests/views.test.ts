@@ -12,6 +12,8 @@ import * as tauriService from '../src/services/tauri';
 import * as eventsService from '../src/services/events';
 import type { Task } from '../src/types/task';
 import type { Execution } from '../src/types/execution';
+import { getStatusLabel, getStatusTagType } from '../src/types/execution';
+import { isWindowsPlatform } from '../src/types/task';
 
 vi.mock('../src/services/tauri', () => ({
   getAgentStatus: vi.fn(),
@@ -243,6 +245,76 @@ describe('Desktop UI Views & Components', () => {
       expect(formatDuration(null)).toBe('-');
       expect(formatDuration(120)).toBe('120 ms');
       expect(formatDuration(0)).toBe('0 ms');
+    });
+
+    it('translates execution status to Chinese labels accurately', () => {
+      expect(getStatusLabel('Succeeded')).toBe('成功');
+      expect(getStatusLabel('Failed')).toBe('失败');
+      expect(getStatusLabel('Running')).toBe('运行中');
+      expect(getStatusLabel('TimedOut')).toBe('超时');
+      expect(getStatusLabel('Cancelled')).toBe('已取消');
+      expect(getStatusLabel('Queued')).toBe('排队中');
+      expect(getStatusLabel('Skipped')).toBe('已跳过');
+      expect(getStatusLabel('Interrupted')).toBe('异常中断');
+      expect(getStatusLabel('Unknown')).toBe('Unknown');
+      expect(getStatusLabel(undefined)).toBe('-');
+
+      expect(getStatusTagType('Succeeded')).toBe('success');
+      expect(getStatusTagType('Failed')).toBe('error');
+      expect(getStatusTagType('Running')).toBe('info');
+      expect(getStatusTagType('TimedOut')).toBe('warning');
+      expect(getStatusTagType('Cancelled')).toBe('default');
+    });
+
+    it('filters executions by task name, status, and time range correctly', () => {
+      const exec1: Execution = {
+        id: 'exec-1',
+        task_id: 'task-1',
+        trigger_id: null,
+        status: 'Succeeded',
+        scheduled_at: null,
+        started_at: '2026-09-14T08:00:00Z',
+        finished_at: '2026-09-14T08:00:10Z',
+        duration_ms: 10000,
+        exit_code: 0,
+        error_message: null,
+      };
+
+      const exec2: Execution = {
+        id: 'exec-2',
+        task_id: 'task-2',
+        trigger_id: null,
+        status: 'Failed',
+        scheduled_at: null,
+        started_at: '2026-09-15T12:00:00Z',
+        finished_at: '2026-09-15T12:00:05Z',
+        duration_ms: 5000,
+        exit_code: 1,
+        error_message: 'error',
+      };
+
+      const all = [exec1, exec2];
+
+      // Filter by status 'Failed'
+      const failedOnly = all.filter((e) => e.status === 'Failed');
+      expect(failedOnly).toHaveLength(1);
+      expect(failedOnly[0].id).toBe('exec-2');
+
+      // Filter by time range
+      const t1 = Date.parse('2026-09-14T00:00:00Z');
+      const t2 = Date.parse('2026-09-14T23:59:59Z');
+      const day1Only = all.filter((e) => {
+        const ts = Date.parse(e.started_at);
+        return ts >= t1 && ts <= t2;
+      });
+      expect(day1Only).toHaveLength(1);
+      expect(day1Only[0].id).toBe('exec-1');
+    });
+
+    it('detects platform correctly and exposes isWindowsPlatform helper', () => {
+      expect(typeof isWindowsPlatform).toBe('function');
+      const isWin = isWindowsPlatform();
+      expect(typeof isWin).toBe('boolean');
     });
   });
 

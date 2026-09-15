@@ -1,24 +1,5 @@
 <script lang="ts">
-export function getStatusTagType(
-  status?: string
-): 'info' | 'success' | 'error' | 'warning' | 'default' {
-  switch (status) {
-    case 'Running':
-      return 'info';
-    case 'Succeeded':
-      return 'success';
-    case 'Failed':
-      return 'error';
-    case 'TimedOut':
-      return 'warning';
-    case 'Cancelled':
-      return 'default';
-    case 'Interrupted':
-      return 'warning';
-    default:
-      return 'default';
-  }
-}
+export { getStatusTagType, getStatusLabel } from '../../types/execution';
 </script>
 
 <script setup lang="ts">
@@ -28,6 +9,7 @@ import { Square, Copy, Trash2, Terminal } from 'lucide-vue-next';
 import { useExecutionStore } from '../../stores/executionStore';
 import { getExecution } from '../../services/tauri';
 import type { Execution } from '../../types/execution';
+import { getStatusTagType, getStatusLabel } from '../../types/execution';
 
 const props = defineProps<{
   executionId: string | null;
@@ -206,7 +188,7 @@ async function executeCancel() {
                 :bordered="false"
                 :type="getStatusTagType(currentExecution?.status)"
               >
-                {{ currentExecution?.status || 'Unknown' }}
+                {{ getStatusLabel(currentExecution?.status) }}
               </NTag>
               <span
                 v-if="currentExecution?.duration_ms != null"

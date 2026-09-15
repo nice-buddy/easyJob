@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { NSelect, NInput, NButton, NSwitch } from 'naive-ui';
 import { Plus, Trash2 } from 'lucide-vue-next';
-import type { Action } from '../../types/task';
-import { getActionType } from '../../types/task';
+import type { Action, ActionKind } from '../../types/task';
+import { getActionType, isWindowsPlatform } from '../../types/task';
 
 const props = defineProps<{
   actions: Action[];
@@ -13,20 +13,46 @@ const emit = defineEmits<{
   (e: 'update:actions', actions: Action[]): void;
 }>();
 
-const actionTypeOptions = [
-  { label: 'Shell 脚本 / 命令 (ExecuteShell)', value: 'ExecuteShell' },
-  { label: '独立可执行程序 (ExecuteProgram)', value: 'ExecuteProgram' },
-  { label: 'PowerShell 脚本 (ExecutePowerShell)', value: 'ExecutePowerShell' },
-  { label: 'Windows CMD (ExecuteCmd)', value: 'ExecuteCmd' },
-];
+const isWindows = isWindowsPlatform();
+
+const platformDefaultOptions = isWindows
+  ? [
+      { label: 'Windows CMD (ExecuteCmd)', value: 'ExecuteCmd' },
+      { label: 'PowerShell 脚本 (ExecutePowerShell)', value: 'ExecutePowerShell' },
+      { label: '独立可执行程序 (ExecuteProgram)', value: 'ExecuteProgram' },
+    ]
+  : [
+      { label: 'Shell 脚本 / 命令 (ExecuteShell)', value: 'ExecuteShell' },
+      { label: '独立可执行程序 (ExecuteProgram)', value: 'ExecuteProgram' },
+    ];
+
+function getActionTypeOptions(action: Action) {
+  const currentType = getActionType(action.kind);
+  if (!platformDefaultOptions.some((opt) => opt.value === currentType)) {
+    const allLabels: Record<string, string> = {
+      ExecuteShell: 'Shell 脚本 / 命令 (ExecuteShell)',
+      ExecuteProgram: '独立可执行程序 (ExecuteProgram)',
+      ExecutePowerShell: 'PowerShell 脚本 (ExecutePowerShell)',
+      ExecuteCmd: 'Windows CMD (ExecuteCmd)',
+    };
+    return [
+      ...platformDefaultOptions,
+      { label: allLabels[currentType] || currentType, value: currentType },
+    ];
+  }
+  return platformDefaultOptions;
+}
 
 function addAction() {
+  const defaultKind: ActionKind = isWindows
+    ? { ExecuteCmd: { command: '' } }
+    : { ExecuteShell: { command: '' } };
   const newAction: Action = {
     id: crypto.randomUUID(),
     task_id: props.taskId,
     sequence: props.actions.length + 1,
     enabled: true,
-    kind: { ExecuteShell: { command: '' } },
+    kind: defaultKind,
   };
   emit('update:actions', [...props.actions, newAction]);
 }
@@ -103,7 +129,7 @@ function setArgsString(action: Action, val: string) {
           </span>
           <NSelect
             :value="getActionType(act.kind)"
-            :options="actionTypeOptions"
+            :options="getActionTypeOptions(act)"
             size="small"
             class="w-64"
             @update:value="changeKindType(act, $event)"
