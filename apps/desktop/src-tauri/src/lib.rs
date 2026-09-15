@@ -7,6 +7,12 @@ use agent_manager::AgentManager;
 use commands::*;
 use events::spawn_event_relay;
 use std::sync::Arc;
+use tauri::Manager;
+
+/// Check if the CLI arguments contain `--minimized` (used by autostart silent launch).
+pub fn is_minimized_launch(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--minimized")
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +20,10 @@ pub fn run() {
     let manager_for_events = agent_manager.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .manage(agent_manager)
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -21,6 +31,15 @@ pub fn run() {
             if let Err(e) = tray::setup_system_tray(&handle) {
                 tracing::warn!("Failed to setup system tray: {:?}", e);
             }
+
+            // 若存在 --minimized 参数（开机自启动唤醒），保持主窗口隐藏并静默常驻系统托盘
+            let args: Vec<String> = std::env::args().collect();
+            if is_minimized_launch(&args) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {

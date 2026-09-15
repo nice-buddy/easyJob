@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions for easyJob desktop","local":true,"windows":["main"],"permissions":["core:default","core:event:default"]}}
+{"default":{"identifier":"default","description":"Default permissions for easyJob desktop","local":true,"windows":["main"],"permissions":["core:default","core:event:default","autostart:default"]}}

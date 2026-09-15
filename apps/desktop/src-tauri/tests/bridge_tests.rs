@@ -297,3 +297,14 @@ async fn test_agent_manager_call_helper() {
         .unwrap_err();
     assert!(err.contains("not found"));
 }
+
+#[test]
+fn test_minimized_arg_detection() {
+    let args = vec!["easyjob-desktop".to_string(), "--minimized".to_string()];
+    assert!(easyjob_desktop_lib::is_minimized_launch(&args));
+    assert!(args.iter().any(|arg| arg == "--minimized"));
+
+    let normal_args = vec!["easyjob-desktop".to_string()];
+    assert!(!easyjob_desktop_lib::is_minimized_launch(&normal_args));
+    assert!(!normal_args.iter().any(|arg| arg == "--minimized"));
+}
