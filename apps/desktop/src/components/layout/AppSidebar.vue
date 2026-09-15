@@ -20,10 +20,9 @@ const agentStore = useAgentStore();
     <div>
       <!-- Brand -->
       <div class="flex items-center gap-2.5 px-1 py-2 mb-4">
-        <div class="w-7 h-7 rounded-lg bg-emerald-600 flex items-center justify-center text-white font-bold text-xs shadow-md shrink-0">
-          eJ
-        </div>
+        <img src="/favicon.svg" class="w-7 h-7 rounded-lg shadow-sm shrink-0 object-contain" alt="easyJob Logo" />
         <div class="min-w-0">
+
           <div class="font-bold text-sm tracking-wide leading-none">easyJob</div>
           <div class="text-[11px] text-slate-400 dark:text-zinc-500 mt-1 leading-none truncate">任务调度台</div>
         </div>

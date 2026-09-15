@@ -7,6 +7,7 @@ import ExecutionsView from './views/ExecutionsView.vue';
 import SettingsView from './views/SettingsView.vue';
 import { useAgentStore } from './stores/agentStore';
 import { useExecutionStore } from './stores/executionStore';
+import { initAutostartDefault } from './services/autostart';
 
 const isDark = ref(true);
 const currentView = ref<'tasks' | 'executions' | 'settings'>('tasks');
@@ -30,7 +31,9 @@ const executionStore = useExecutionStore();
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 onMounted(async () => {
+  initAutostartDefault().catch((err) => console.warn('Autostart init bypassed:', err));
   await agentStore.fetchStatus();
+
   executionStore.initListeners();
   pollInterval = setInterval(() => {
     agentStore.fetchStatus();
