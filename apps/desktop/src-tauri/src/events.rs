@@ -5,7 +5,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tracing::{error, info, warn};
 
 pub fn spawn_event_relay(app_handle: AppHandle, manager: Arc<AgentManager>) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         loop {
             match manager.ensure_connected().await {
                 Ok(client) => {
