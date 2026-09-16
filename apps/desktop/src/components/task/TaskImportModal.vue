@@ -121,11 +121,11 @@ async function handleConfirmImport() {
       const cloned = JSON.parse(JSON.stringify(item.task)) as Task;
       cloned.id = newId;
       cloned.version = 1;
-      cloned.triggers.forEach((tr) => {
+      (cloned.triggers || []).forEach((tr: any) => {
         tr.id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'tr-' + Math.random().toString(36).substring(2, 9);
         tr.task_id = newId;
       });
-      cloned.actions.forEach((act) => {
+      (cloned.actions || []).forEach((act: any) => {
         act.id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'act-' + Math.random().toString(36).substring(2, 9);
         act.task_id = newId;
       });
@@ -135,11 +135,11 @@ async function handleConfirmImport() {
       const cloned = JSON.parse(JSON.stringify(item.task)) as Task;
       cloned.id = existingId;
       cloned.version = (item.existingMatch.version || 1) + 1;
-      cloned.triggers.forEach((tr) => {
+      (cloned.triggers || []).forEach((tr: any) => {
         tr.id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'tr-' + Math.random().toString(36).substring(2, 9);
         tr.task_id = existingId;
       });
-      cloned.actions.forEach((act) => {
+      (cloned.actions || []).forEach((act: any) => {
         act.id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'act-' + Math.random().toString(36).substring(2, 9);
         act.task_id = existingId;
       });
@@ -149,11 +149,11 @@ async function handleConfirmImport() {
       const cloned = JSON.parse(JSON.stringify(item.mergedTask)) as Task;
       cloned.id = existingId;
       cloned.version = (item.existingMatch.version || 1) + 1;
-      cloned.triggers.forEach((tr) => {
+      (cloned.triggers || []).forEach((tr: any) => {
         tr.id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'tr-' + Math.random().toString(36).substring(2, 9);
         tr.task_id = existingId;
       });
-      cloned.actions.forEach((act) => {
+      (cloned.actions || []).forEach((act: any) => {
         act.id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'act-' + Math.random().toString(36).substring(2, 9);
         act.task_id = existingId;
       });
