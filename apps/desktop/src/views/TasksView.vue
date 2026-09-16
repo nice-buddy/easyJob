@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { NButton, NInput, NSwitch, NTag, NEmpty, useMessage, useDialog } from 'naive-ui';
-import { Plus, Search, Play, Edit2, Trash2, Download } from 'lucide-vue-next';
+import { Plus, Search, Play, Edit2, Trash2, Download, Upload } from 'lucide-vue-next';
 import TaskDrawer from '../components/task/TaskDrawer.vue';
 import LiveLogDrawer from '../components/console/LiveLogDrawer.vue';
 import TaskExportModal from '../components/task/TaskExportModal.vue';
+import TaskImportModal from '../components/task/TaskImportModal.vue';
 import { useTaskStore } from '../stores/taskStore';
 import { useExecutionStore } from '../stores/executionStore';
 import type { Task } from '../types/task';
@@ -19,6 +20,7 @@ const executionStore = useExecutionStore();
 const showDrawer = ref(false);
 const showLogDrawer = ref(false);
 const showExportModal = ref(false);
+const showImportModal = ref(false);
 const selectedExecutionId = ref<string | null>(null);
 const editingTask = ref<Task | null>(null);
 
@@ -142,6 +144,13 @@ async function handleDelete(task: Task) {
           导出任务
         </NButton>
 
+        <NButton size="medium" secondary @click="showImportModal = true">
+          <template #icon>
+            <Upload class="w-4 h-4 text-slate-500" />
+          </template>
+          导入任务
+        </NButton>
+
         <NButton
           type="primary"
           size="medium"
@@ -229,6 +238,13 @@ async function handleDelete(task: Task) {
     <TaskExportModal
       v-model:show="showExportModal"
       :tasks="taskStore.tasks"
+    />
+
+    <!-- Task Import Modal -->
+    <TaskImportModal
+      v-model:show="showImportModal"
+      :existing-tasks="taskStore.tasks"
+      @imported="taskStore.loadTasks()"
     />
   </div>
 </template>
