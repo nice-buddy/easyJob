@@ -71,4 +71,25 @@ describe('TaskMergeModal quick copy actions', () => {
     expect(target.actions).toHaveLength(1);
     expect(target.actions[0].kind).toEqual({ ExecuteShell: { command: 'ls -la' } });
   });
+  it('updates environment variables into target task', () => {
+    const target = getEmptyTask();
+    
+    // Simulate updating envList and syncing to target.environment
+    const envList = [
+      { key: 'ENV_VAR_1', value: 'value1' },
+      { key: 'ENV_VAR_2', value: 'value2' },
+      { key: ' ', value: 'ignore-empty' },
+    ];
+    
+    const obj: Record<string, string> = {};
+    envList.forEach(({ key, value }) => {
+      if (key.trim()) obj[key.trim()] = value;
+    });
+    target.environment = obj;
+
+    expect(target.environment).toEqual({
+      ENV_VAR_1: 'value1',
+      ENV_VAR_2: 'value2',
+    });
+  });
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, watch } from 'vue';
 import {
   NCollapse,
   NCollapseItem,
@@ -37,20 +37,34 @@ const missedRunOptions: { label: string; value: MissedRunPolicy }[] = [
   { label: '直接跳过 (Skip)', value: 'Skip' },
 ];
 
-const envEntries = computed({
-  get: () => {
-    if (!props.task) return [];
-    return Object.entries(props.task.environment || {});
+const envList = ref<{ key: string; value: string }[]>([]);
+
+watch(
+  () => props.task?.environment,
+  (env) => {
+    envList.value = Object.entries(env || {}).map(([key, value]) => ({ key, value }));
   },
-  set: (val) => {
-    if (!props.task) return;
-    const obj: Record<string, string> = {};
-    val.forEach(([k, v]) => {
-      if (k.trim()) obj[k.trim()] = v;
-    });
-    props.task.environment = obj;
-  },
-});
+  { immediate: true, deep: true }
+);
+
+function syncEnv() {
+  if (!props.task) return;
+  const obj: Record<string, string> = {};
+  envList.value.forEach(({ key, value }) => {
+    if (key.trim()) obj[key.trim()] = value;
+  });
+  props.task.environment = obj;
+}
+
+function addEnv() {
+  envList.value.push({ key: '', value: '' });
+  syncEnv();
+}
+
+function removeEnv(idx: number) {
+  envList.value.splice(idx, 1);
+  syncEnv();
+}
 </script>
 
 <template>
@@ -228,15 +242,15 @@ const envEntries = computed({
 
         <div v-else class="space-y-2">
           <div
-            v-for="([k, v], idx) in envEntries"
+            v-for="(item, idx) in envList"
             :key="idx"
             class="flex items-center gap-2"
           >
-            <NInput :value="k" size="small" placeholder="KEY" @update:value="envEntries[idx][0] = $event" />
-            <NInput :value="v" size="small" placeholder="VALUE" @update:value="envEntries[idx][1] = $event" />
-            <NButton size="tiny" secondary type="error" @click="envEntries.splice(idx, 1)">×</NButton>
+            <NInput v-model:value="item.key" size="small" placeholder="KEY" @update:value="syncEnv" />
+            <NInput v-model:value="item.value" size="small" placeholder="VALUE" @update:value="syncEnv" />
+            <NButton size="tiny" secondary type="error" @click="removeEnv(idx)">×</NButton>
           </div>
-          <NButton size="tiny" secondary @click="envEntries.push(['', ''])">+ 添加环境变量</NButton>
+          <NButton size="tiny" secondary @click="addEnv">+ 添加环境变量</NButton>
         </div>
       </NCollapseItem>
     </NCollapse>
