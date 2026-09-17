@@ -14,6 +14,31 @@ pub fn is_minimized_launch(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--minimized")
 }
 
+/// Show or hide the macOS Dock icon dynamically based on window visibility.
+#[cfg(target_os = "macos")]
+pub fn set_dock_visible(visible: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    if let Some(cls) = AnyClass::get(c"NSApplication") {
+        unsafe {
+            let app: *mut AnyObject = msg_send![cls, sharedApplication];
+            if !app.is_null() {
+                // 0 = NSApplicationActivationPolicyRegular (shows in Dock)
+                // 1 = NSApplicationActivationPolicyAccessory (hidden from Dock, tray only)
+                let policy: isize = if visible { 0 } else { 1 };
+                let _: bool = msg_send![app, setActivationPolicy: policy];
+                if visible {
+                    let _: () = msg_send![app, activateIgnoringOtherApps: true];
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_dock_visible(_visible: bool) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let agent_manager = Arc::new(AgentManager::new());
@@ -32,9 +57,10 @@ pub fn run() {
                 tracing::warn!("Failed to setup system tray: {:?}", e);
             }
 
-            // 若存在 --minimized 参数（开机自启动唤醒），保持主窗口隐藏并静默常驻系统托盘
+            // 若存在 --minimized 参数（开机自启动唤醒），保持主窗口隐藏、隐藏 Dock 图标并静默常驻系统托盘
             let args: Vec<String> = std::env::args().collect();
             if is_minimized_launch(&args) {
+                set_dock_visible(false);
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
@@ -46,6 +72,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                set_dock_visible(false);
             }
         })
         .invoke_handler(tauri::generate_handler![

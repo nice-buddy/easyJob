@@ -308,3 +308,9 @@ fn test_minimized_arg_detection() {
     assert!(!easyjob_desktop_lib::is_minimized_launch(&normal_args));
     assert!(!normal_args.iter().any(|arg| arg == "--minimized"));
 }
+
+#[test]
+fn test_set_dock_visible_does_not_panic() {
+    easyjob_desktop_lib::set_dock_visible(false);
+    easyjob_desktop_lib::set_dock_visible(true);
+}

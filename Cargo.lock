@@ -1005,6 +1005,7 @@ dependencies = [
  "easyjob-common",
  "easyjob-domain",
  "easyjob-ipc",
+ "objc2",
  "serde",
  "serde_json",
  "tauri",
