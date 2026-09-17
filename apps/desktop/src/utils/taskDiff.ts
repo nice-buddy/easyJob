@@ -63,12 +63,19 @@ export function compareTasks(existingTask: Task, importedTask: Task): TaskDiffRe
     diffFields.add('policy.retry_delay_secs');
   }
 
+  const n1 = ep1.notification || 'None';
+  const n2 = ep2.notification || 'None';
+  if (n1 !== n2) {
+    diffFields.add('policy.notification');
+  }
+
   const policyDiff =
     diffFields.has('policy.concurrency_policy') ||
     diffFields.has('policy.missed_run_policy') ||
     diffFields.has('policy.timeout_secs') ||
     diffFields.has('policy.retry_max_retries') ||
-    diffFields.has('policy.retry_delay_secs');
+    diffFields.has('policy.retry_delay_secs') ||
+    diffFields.has('policy.notification');
 
   // 3. Triggers
   const normTriggers1 = existingTask.triggers.map(normalizeTrigger);

@@ -101,4 +101,16 @@ describe('taskDiff utility', () => {
     expect(diff.diffFields.has('env.FOO')).toBe(true);
     expect(diff.diffFields.has('env.EXTRA')).toBe(true);
   });
+
+  it('detects notification policy differences', () => {
+    const t1 = getEmptyTask();
+    t1.execution_policy.notification = 'None';
+    const t2 = JSON.parse(JSON.stringify(t1));
+    t2.execution_policy.notification = 'OnlyFailure';
+
+    const diff = compareTasks(t1, t2);
+    expect(diff.hasDiff).toBe(true);
+    expect(diff.policyDiff).toBe(true);
+    expect(diff.diffFields.has('policy.notification')).toBe(true);
+  });
 });

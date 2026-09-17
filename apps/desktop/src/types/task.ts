@@ -4,6 +4,7 @@ export type ActionId = string;
 
 export type ConcurrencyPolicy = 'AllowParallel' | 'SkipIfRunning' | 'QueueOne';
 export type MissedRunPolicy = 'RunOnce' | 'Skip';
+export type TaskNotificationPolicy = 'None' | 'OnlySuccess' | 'OnlyFailure' | 'All';
 
 export interface RetryPolicy {
   max_retries: number;
@@ -15,6 +16,7 @@ export interface ExecutionPolicy {
   missed_run_policy: MissedRunPolicy;
   retry_policy: RetryPolicy;
   timeout_secs: number | null;
+  notification: TaskNotificationPolicy;
 }
 
 export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
@@ -97,6 +99,7 @@ export function getEmptyTask(): Task {
         delay_secs: 0,
       },
       timeout_secs: 3600,
+      notification: 'None',
     },
     working_directory: null,
     environment: {},
