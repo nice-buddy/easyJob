@@ -51,7 +51,12 @@ impl RequestHandler for MockAgentHandler {
                 IpcResponse::success(req.id, serde_json::to_value(task).unwrap())
             }
             "task.delete" => IpcResponse::success(req.id, serde_json::json!(true)),
-            "task.trigger_now" => IpcResponse::success(req.id, serde_json::json!(true)),
+            "task.trigger_now" => {
+                let id: TaskId = serde_json::from_value(req.params["id"].clone())
+                    .unwrap_or_else(|_| TaskId::new());
+                let exec = Execution::new(id, None, None);
+                IpcResponse::success(req.id, serde_json::to_value(exec).unwrap())
+            }
             "execution.list" => IpcResponse::success(req.id, serde_json::json!([])),
             "execution.get" => {
                 let id: ExecutionId = serde_json::from_value(req.params["id"].clone())
@@ -93,7 +98,8 @@ async fn test_ipc_bridge_client_calls() {
         )
         .await
         .unwrap();
-    assert_eq!(trig, serde_json::json!(true));
+    assert!(trig.get("id").is_some());
+    assert!(trig.get("task_id").is_some());
 }
 
 #[tokio::test]
@@ -202,8 +208,8 @@ async fn test_all_rpc_methods() {
         .call("task.trigger_now", serde_json::json!({ "id": task_id }))
         .await
         .unwrap();
-    let trig_ok: bool = serde_json::from_value(trig_val).unwrap();
-    assert!(trig_ok);
+    let trig_exec: Execution = serde_json::from_value(trig_val).unwrap();
+    assert_eq!(trig_exec.task_id, task_id);
 
     // 7. execution.list
     let execs_val = client

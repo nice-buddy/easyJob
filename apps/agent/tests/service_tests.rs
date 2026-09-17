@@ -104,7 +104,12 @@ async fn test_agent_service_lifecycle_and_rpc() {
         .call("task.trigger_now", serde_json::json!({ "id": task_id }))
         .await
         .expect("task.trigger_now failed");
-    assert_eq!(trigger_res, serde_json::json!(true));
+    // trigger_now now returns the created Execution object (not just `true`)
+    assert_eq!(trigger_res["task_id"], task_id.to_string());
+    assert_eq!(trigger_res["status"], "Running");
+    let returned_exec_id = trigger_res["id"]
+        .as_str()
+        .expect("execution id in response");
 
     // Wait for execution events
     let mut started_seen = false;
@@ -158,6 +163,7 @@ async fn test_agent_service_lifecycle_and_rpc() {
         .await
         .expect("execution.get failed");
     assert_eq!(exec_item["id"], exec_id);
+    assert_eq!(exec_item["id"], returned_exec_id);
     assert_eq!(exec_item["status"], "Succeeded");
     assert_eq!(exec_item["exit_code"], 0);
 

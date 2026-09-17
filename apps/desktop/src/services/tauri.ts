@@ -23,8 +23,8 @@ export async function deleteTask(id: TaskId): Promise<boolean> {
   return await invoke<boolean>('delete_task', { id });
 }
 
-export async function triggerTask(id: TaskId): Promise<boolean> {
-  return await invoke<boolean>('trigger_task', { id });
+export async function triggerTask(id: TaskId): Promise<Execution> {
+  return await invoke<Execution>('trigger_task', { id });
 }
 
 export async function listExecutions(limit?: number): Promise<Execution[]> {

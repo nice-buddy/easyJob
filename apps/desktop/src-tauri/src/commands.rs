@@ -51,7 +51,7 @@ pub async fn delete_task(
 pub async fn trigger_task(
     id: TaskId,
     manager: State<'_, Arc<AgentManager>>,
-) -> Result<bool, String> {
+) -> Result<Execution, String> {
     let val = manager
         .call("task.trigger_now", serde_json::json!({ "id": id }))
         .await?;

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -32,6 +32,8 @@ pub struct AgentService {
     start_time: Instant,
     shutdown_notify: Arc<Notify>,
     active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
+    /// Shared cancellation token — handler's trigger_now and the dispatcher both derive child tokens from this.
+    exec_cancel_token: CancellationToken,
 }
 
 impl AgentService {
@@ -76,6 +78,10 @@ impl AgentService {
         let shutdown_notify = Arc::new(Notify::new());
         let active_executions = Arc::new(Mutex::new(HashMap::new()));
         let start_time = Instant::now();
+        // Create the shared broadcast channel and cancellation token before the handler,
+        // so both the handler (for trigger_now) and the dispatcher loop share the same objects.
+        let exec_cancel_token = CancellationToken::new();
+        let (event_tx, _) = tokio::sync::broadcast::channel(1024);
 
         let handler = Arc::new(AgentRpcHandler {
             task_repo: task_repo.clone(),
@@ -85,9 +91,11 @@ impl AgentService {
             start_time,
             shutdown_notify: shutdown_notify.clone(),
             active_executions: active_executions.clone(),
+            event_tx: event_tx.clone(),
+            exec_cancel_token: exec_cancel_token.clone(),
         });
 
-        let ipc_server = IpcServer::bind(ipc_path, handler).await?;
+        let ipc_server = IpcServer::bind_with_event_tx(ipc_path, handler, event_tx).await?;
 
         Ok(Self {
             task_repo,
@@ -101,6 +109,7 @@ impl AgentService {
             start_time,
             shutdown_notify,
             active_executions,
+            exec_cancel_token,
         })
     }
 
@@ -134,9 +143,13 @@ impl AgentService {
         let exec_repo = self.exec_repo.clone();
         let exec_manager = self.exec_manager.clone();
         let active_executions = self.active_executions.clone();
+        // Use the shared token so both the dispatcher and handler's trigger_now
+        // cancel together on shutdown.
         let cancel_token = CancellationToken::new();
         let dispatcher_cancel = cancel_token.clone();
-        let exec_cancel_token = cancel_token.clone();
+        // Keep one clone to cancel on shutdown, pass the other into the dispatcher.
+        let exec_cancel_token = self.exec_cancel_token.clone();
+        let exec_cancel_token_for_dispatcher = exec_cancel_token.clone();
 
         // Spawn trigger event listener & execution dispatcher
         let dispatcher_handle = tokio::spawn(async move {
@@ -177,7 +190,7 @@ impl AgentService {
                         let e_manager = exec_manager.clone();
                         let active_execs = active_executions.clone();
                         let ev_tx = event_tx.clone();
-                        let action_cancel = exec_cancel_token.child_token();
+                        let action_cancel = exec_cancel_token_for_dispatcher.child_token();
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -319,6 +332,8 @@ impl AgentService {
         }
 
         cancel_token.cancel();
+        // Also cancel executions spawned by the RPC handler's trigger_now path.
+        exec_cancel_token.cancel();
         let _ = dispatcher_handle.await;
 
         // Await in-flight executions to finish with timeout
@@ -345,6 +360,10 @@ pub struct AgentRpcHandler {
     pub(crate) start_time: Instant,
     pub(crate) shutdown_notify: Arc<Notify>,
     pub(crate) active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
+    /// IPC broadcast channel — used by trigger_now to fire execution events directly.
+    pub(crate) event_tx: broadcast::Sender<IpcEvent>,
+    /// Parent cancellation token — child tokens are derived from this for each manual trigger.
+    pub(crate) exec_cancel_token: CancellationToken,
 }
 
 impl AgentRpcHandler {
@@ -472,16 +491,189 @@ impl RequestHandler for AgentRpcHandler {
                         )
                     }
                 };
-                match self
-                    .scheduler_tx
-                    .send(SchedulerCommand::TriggerNow(id))
-                    .await
-                {
-                    Ok(()) => IpcResponse::success(req.id, serde_json::json!(true)),
-                    Err(e) => {
-                        IpcResponse::error(req.id, format!("Failed to send trigger command: {}", e))
+
+                // Look up the task
+                let task = match self.task_repo.find_by_id(&id).await {
+                    Ok(Some(t)) => t,
+                    Ok(None) => {
+                        return IpcResponse::error(req.id, format!("Task '{}' not found", id))
                     }
+                    Err(e) => return IpcResponse::error(req.id, e.to_string()),
+                };
+
+                // Attempt to acquire the global concurrency permit
+                let permit = match self.exec_manager.global_semaphore().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return IpcResponse::error(
+                            req.id,
+                            format!(
+                                "Global concurrency limit reached, cannot trigger task '{}'",
+                                id
+                            ),
+                        )
+                    }
+                };
+
+                // Attempt to acquire the per-task slot
+                let acquired = self
+                    .exec_manager
+                    .try_acquire_slot(&task.id, task.execution_policy.concurrency_policy)
+                    .await;
+                if !acquired {
+                    drop(permit);
+                    return IpcResponse::error(
+                        req.id,
+                        format!(
+                            "Task '{}' concurrency policy prevented execution (already running)",
+                            id
+                        ),
+                    );
                 }
+
+                // Synchronously create the execution record in SQLite
+                let mut exec = Execution::new(task.id, None, Some(chrono::Utc::now()));
+                exec.status = ExecutionStatus::Running;
+                exec.started_at = chrono::Utc::now();
+
+                if let Err(e) = self.exec_repo.create_run(&exec).await {
+                    self.exec_manager.release_slot(&task.id).await;
+                    return IpcResponse::error(
+                        req.id,
+                        format!("Failed to create execution record: {}", e),
+                    );
+                }
+
+                // Register in active_executions map
+                let action_cancel = self.exec_cancel_token.child_token();
+                self.active_executions
+                    .lock()
+                    .await
+                    .insert(exec.id, action_cancel.clone());
+
+                // Broadcast execution.started immediately
+                let _ = self.event_tx.send(IpcEvent::new(
+                    "execution.started",
+                    serde_json::json!({
+                        "execution_id": exec.id,
+                        "task_id": exec.task_id,
+                    }),
+                ));
+
+                // Serialize execution for the response before moving it into the spawn
+                let exec_value = match serde_json::to_value(&exec) {
+                    Ok(v) => v,
+                    Err(e) => return IpcResponse::error(req.id, e.to_string()),
+                };
+
+                // Spawn the actual task execution in the background
+                let e_repo = self.exec_repo.clone();
+                let e_manager = self.exec_manager.clone();
+                let active_execs = self.active_executions.clone();
+                let ev_tx = self.event_tx.clone();
+
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let mut final_status = ExecutionStatus::Succeeded;
+                    let mut exit_code = Some(0);
+                    let mut error_message = None;
+
+                    for action in &task.actions {
+                        if !action.enabled {
+                            continue;
+                        }
+                        let res = ProcessRunner::run_action(
+                            action,
+                            task.working_directory.as_ref(),
+                            &task.environment,
+                            task.execution_policy.timeout_secs,
+                            action_cancel.clone(),
+                        )
+                        .await;
+
+                        match res {
+                            Ok(run_res) => {
+                                if !run_res.stdout.is_empty() {
+                                    let _ = e_repo
+                                        .append_output(&exec.id, "stdout", &run_res.stdout)
+                                        .await;
+                                    let _ = ev_tx.send(IpcEvent::new(
+                                        "execution.output",
+                                        serde_json::json!({
+                                            "execution_id": exec.id,
+                                            "task_id": exec.task_id,
+                                            "stream": "stdout",
+                                            "content": run_res.stdout,
+                                        }),
+                                    ));
+                                }
+                                if !run_res.stderr.is_empty() {
+                                    let _ = e_repo
+                                        .append_output(&exec.id, "stderr", &run_res.stderr)
+                                        .await;
+                                    let _ = ev_tx.send(IpcEvent::new(
+                                        "execution.output",
+                                        serde_json::json!({
+                                            "execution_id": exec.id,
+                                            "task_id": exec.task_id,
+                                            "stream": "stderr",
+                                            "content": run_res.stderr,
+                                        }),
+                                    ));
+                                }
+                                exit_code = run_res.exit_code;
+                                if run_res.status != ExecutionStatus::Succeeded {
+                                    final_status = run_res.status;
+                                    error_message = run_res.error_message;
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                final_status = ExecutionStatus::Failed;
+                                error_message = Some(e.to_string());
+                                break;
+                            }
+                        }
+                    }
+
+                    let finished_at = chrono::Utc::now();
+                    let duration_ms =
+                        (finished_at - exec.started_at).num_milliseconds().max(0) as u64;
+
+                    let mut finished_exec = exec;
+                    finished_exec.status = final_status;
+                    finished_exec.finished_at = Some(finished_at);
+                    finished_exec.duration_ms = Some(duration_ms);
+                    finished_exec.exit_code = exit_code;
+                    finished_exec.error_message = error_message.clone();
+
+                    if let Err(e) = e_repo.update_run(&finished_exec).await {
+                        error!(
+                            "Failed to update execution run {}: {:?}",
+                            finished_exec.id, e
+                        );
+                    }
+
+                    let _ = ev_tx.send(IpcEvent::new(
+                        "execution.finished",
+                        serde_json::json!({
+                            "execution_id": finished_exec.id,
+                            "task_id": finished_exec.task_id,
+                            "task_name": task.name,
+                            "status": finished_exec.status,
+                            "exit_code": finished_exec.exit_code,
+                            "duration_ms": duration_ms,
+                            "error_message": error_message,
+                            "notification_policy": task.execution_policy.notification,
+                        }),
+                    ));
+
+                    active_execs.lock().await.remove(&finished_exec.id);
+                    e_manager.release_slot(&task.id).await;
+                });
+
+                // Return the execution object to the caller immediately
+                IpcResponse::success(req.id, exec_value)
             }
             "execution.list" => {
                 let limit = if req.params.is_object() && req.params.get("limit").is_some() {

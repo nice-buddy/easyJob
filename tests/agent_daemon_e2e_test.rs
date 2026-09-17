@@ -118,7 +118,8 @@ async fn test_full_agent_daemon_ipc_lifecycle() {
         .call("task.trigger_now", serde_json::json!({ "id": task_id }))
         .await
         .expect("task.trigger_now failed");
-    assert_eq!(trigger_res, serde_json::json!(true));
+    assert_eq!(trigger_res["task_id"], task_id.to_string());
+    assert_eq!(trigger_res["status"], "Running");
 
     // 4. Real-time IPC events: receives "execution.started", "execution.output", and "execution.finished"
     let mut started_seen = false;

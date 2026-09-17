@@ -99,6 +99,17 @@ pub struct IpcServer {
 
 impl IpcServer {
     pub async fn bind(path: &Path, handler: Arc<dyn RequestHandler>) -> Result<Self> {
+        let (event_tx, _) = broadcast::channel(1024);
+        Self::bind_with_event_tx(path, handler, event_tx).await
+    }
+
+    /// Like `bind`, but uses the provided `event_tx` so the caller can share the broadcaster
+    /// with the request handler before the server is constructed.
+    pub async fn bind_with_event_tx(
+        path: &Path,
+        handler: Arc<dyn RequestHandler>,
+        event_tx: broadcast::Sender<IpcEvent>,
+    ) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(Error::Io)?;
         }
@@ -123,8 +134,6 @@ impl IpcServer {
                 .create(&pipe_name)
                 .map_err(Error::Io)?
         };
-
-        let (event_tx, _) = broadcast::channel(1024);
 
         let inner = Arc::new(IpcServerInner {
             path: path.to_path_buf(),

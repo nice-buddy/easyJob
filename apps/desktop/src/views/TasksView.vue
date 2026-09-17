@@ -70,29 +70,19 @@ async function handleToggleEnabled(task: Task, enabled: boolean) {
 
 async function handleTrigger(task: Task) {
   try {
-    // 提前注册 execution.started 事件监听，确保精准捕获本次下发产生的最新执行 ID，杜绝竞态匹配到历史旧执行
-    const startedPromise = executionStore.waitForExecutionStarted(task.id, 5000);
+    // triggerTask now synchronously creates the Execution on the backend and returns it,
+    // so we get the execution ID immediately (~2ms) with no race conditions.
+    const exec = await taskStore.triggerTask(task.id);
 
-    selectedExecutionId.value = null;
-    executionStore.activeExecutionId = null;
+    // Seed the executionStore cache with the running execution so LiveLogDrawer
+    // can display "Running" status before any IPC event arrives.
+    executionStore.executions.unshift(exec);
+    executionStore.activeExecutionId = exec.id;
+
+    selectedExecutionId.value = exec.id;
     showLogDrawer.value = true;
 
-    await taskStore.triggerTask(task.id);
     message.success(`已下发执行指令: ${task.name}`);
-
-    const execId = await startedPromise;
-    if (execId) {
-      selectedExecutionId.value = execId;
-      executionStore.activeExecutionId = execId;
-    } else {
-      // 容错降级：若广播由于极端情况延迟，重新加载执行记录并匹配最新记录
-      await executionStore.loadExecutions();
-      const match = executionStore.executions.find((e) => e.task_id === task.id);
-      if (match) {
-        selectedExecutionId.value = match.id;
-        executionStore.activeExecutionId = match.id;
-      }
-    }
   } catch (e: any) {
     message.error('触发失败: ' + (e?.message || e));
   }
