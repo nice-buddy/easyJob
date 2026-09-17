@@ -541,3 +541,83 @@ async fn test_agent_service_task_completion_notification_policies() {
     let _ = client.call("agent.shutdown", serde_json::json!({})).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
 }
+
+#[tokio::test]
+async fn test_execution_finished_event_contains_notification_metadata() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("metadata_test.db");
+    let socket_path = dir.path().join("metadata_test.sock");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+
+    let service = AgentService::init(&db_url, &socket_path, 2)
+        .await
+        .expect("AgentService::init failed");
+    let service_handle = tokio::spawn(service.run());
+
+    let client = IpcClient::connect(&socket_path)
+        .await
+        .expect("IpcClient::connect failed");
+    let mut event_rx = client.subscribe();
+
+    let task_id = TaskId::new();
+    let task = Task {
+        id: task_id,
+        name: "Test Metadata Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![Action {
+            id: ActionId::new(),
+            task_id,
+            sequence: 1,
+            enabled: true,
+            kind: ActionKind::ExecuteShell {
+                command: "echo metadata_check".to_string(),
+            },
+        }],
+        execution_policy: ExecutionPolicy {
+            notification: TaskNotificationPolicy::All,
+            ..Default::default()
+        },
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    client
+        .call("task.save", serde_json::json!({ "task": task }))
+        .await
+        .expect("task.save failed");
+
+    client
+        .call("task.trigger_now", serde_json::json!({ "id": task_id }))
+        .await
+        .expect("task.trigger_now failed");
+
+    let timeout_duration = Duration::from_secs(5);
+    let mut finished_event = None;
+    let start_instant = std::time::Instant::now();
+    while start_instant.elapsed() < timeout_duration {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.finished" && event.data["task_id"] == task_id.to_string() {
+                finished_event = Some(event);
+                break;
+            }
+        }
+    }
+
+    let event = finished_event.expect("execution.finished event not received");
+    assert_eq!(event.data["task_id"], task_id.to_string());
+    assert_eq!(event.data["task_name"], "Test Metadata Task");
+    assert_eq!(event.data["status"], "Succeeded");
+    assert_eq!(event.data["exit_code"], 0);
+    assert!(event.data["duration_ms"].is_number());
+    assert_eq!(event.data["notification_policy"], "All");
+
+    let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
+}

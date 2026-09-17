@@ -289,62 +289,14 @@ impl AgentService {
                                 serde_json::json!({
                                     "execution_id": exec.id,
                                     "task_id": exec.task_id,
+                                    "task_name": task.name,
                                     "status": exec.status,
                                     "exit_code": exec.exit_code,
+                                    "duration_ms": duration_ms,
+                                    "error_message": error_message,
+                                    "notification_policy": task.execution_policy.notification,
                                 }),
                             ));
-
-                            // 检查任务通知策略并异步触发系统通知
-                            let need_notify = match task.execution_policy.notification {
-                                easyjob_domain::policy::TaskNotificationPolicy::None => false,
-                                easyjob_domain::policy::TaskNotificationPolicy::OnlySuccess => {
-                                    final_status == ExecutionStatus::Succeeded
-                                }
-                                easyjob_domain::policy::TaskNotificationPolicy::OnlyFailure => {
-                                    final_status != ExecutionStatus::Succeeded
-                                }
-                                easyjob_domain::policy::TaskNotificationPolicy::All => true,
-                            };
-
-                            if need_notify {
-                                let task_name = task.name.clone();
-                                let is_success = final_status == ExecutionStatus::Succeeded;
-                                let duration_str = if duration_ms < 1000 {
-                                    format!("{}ms", duration_ms)
-                                } else {
-                                    format!("{:.2}s", duration_ms as f64 / 1000.0)
-                                };
-
-                                let subtitle = if is_success {
-                                    format!("任务执行成功: {}", task_name)
-                                } else {
-                                    format!("任务执行失败: {}", task_name)
-                                };
-
-                                let mut body = format!("耗时: {}", duration_str);
-                                if !is_success {
-                                    if let Some(ref err) = error_message {
-                                        let truncated_err = err.chars().take(80).collect::<String>();
-                                        body.push_str(&format!(" | 错误: {}", truncated_err));
-                                    }
-                                }
-
-                                tokio::spawn(async move {
-                                    if let Err(e) = easyjob_platform::notification::send_system_notification(
-                                        "easyJob",
-                                        Some(&subtitle),
-                                        &body,
-                                    )
-                                    .await
-                                    {
-                                        tracing::warn!(
-                                            "Failed to send system notification for task '{}': {:?}",
-                                            task_name,
-                                            e
-                                        );
-                                    }
-                                });
-                            }
 
                             active_execs.lock().await.remove(&exec.id);
                             e_manager.release_slot(&task.id).await;
