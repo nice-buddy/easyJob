@@ -30,7 +30,8 @@ watch(
 const agentStore = useAgentStore();
 const executionStore = useExecutionStore();
 let pollInterval: ReturnType<typeof setInterval> | null = null;
-let unlistenNavigate: (() => void) | null = null;
+let unlistenNavigatePromise: Promise<() => void> | null = null;
+let isComponentMounted = true;
 
 onMounted(async () => {
   initAutostartDefault().catch((err) => console.warn('Autostart init bypassed:', err));
@@ -41,24 +42,32 @@ onMounted(async () => {
     agentStore.fetchStatus();
   }, 5000);
 
-  try {
-    unlistenNavigate = await listen<string>('navigate', (event) => {
-      if (event.payload === 'executions') {
-        currentView.value = 'executions';
-        executionStore.loadExecutions();
-      }
-    });
-  } catch (err) {
+  unlistenNavigatePromise = listen<string>('navigate', (event) => {
+    if (event.payload === 'executions') {
+      currentView.value = 'executions';
+      executionStore.loadExecutions();
+    }
+  }).catch((err) => {
     console.warn('Failed to listen to navigate event:', err);
-  }
+    return () => {};
+  });
+
+  unlistenNavigatePromise.then((unlisten) => {
+    if (!isComponentMounted) {
+      unlisten();
+    }
+  });
 });
 
 onUnmounted(() => {
+  isComponentMounted = false;
   if (pollInterval) {
     clearInterval(pollInterval);
   }
   executionStore.cleanupListeners();
-  if (unlistenNavigate) unlistenNavigate();
+  if (unlistenNavigatePromise) {
+    unlistenNavigatePromise.then((unlisten) => unlisten());
+  }
 });
 </script>
 

@@ -45,7 +45,12 @@ pub fn run() {
     let manager_for_events = agent_manager.clone();
     let manager_for_exit = agent_manager.clone();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    let last_notification_time = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+    let last_notification_for_events = last_notification_time.clone();
+    let last_notification_for_reopen = last_notification_time.clone();
+
+    builder
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -54,7 +59,11 @@ pub fn run() {
         .manage(agent_manager)
         .setup(move |app| {
             let handle = app.handle().clone();
-            spawn_event_relay(handle.clone(), manager_for_events);
+            spawn_event_relay(
+                handle.clone(),
+                manager_for_events,
+                last_notification_for_events,
+            );
             if let Err(e) = tray::setup_system_tray(&handle) {
                 tracing::warn!("Failed to setup system tray: {:?}", e);
             }
@@ -106,7 +115,28 @@ pub fn run() {
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
-                    let _ = window.emit("navigate", "executions");
+
+                    // 仅当最近 30 秒内触发过通知（横幅点击唤起场景）时，自动跳转到执行记录
+                    let should_navigate = {
+                        if let Ok(mut lock) = last_notification_for_reopen.lock() {
+                            if let Some(t) = *lock {
+                                if t.elapsed() < std::time::Duration::from_secs(30) {
+                                    *lock = None; // 消费通知状态，避免后续日常 Dock 激活重复跳转
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
+
+                    if should_navigate {
+                        let _ = window.emit("navigate", "executions");
+                    }
                 }
             }
             _ => {}

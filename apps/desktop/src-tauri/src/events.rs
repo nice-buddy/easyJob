@@ -37,15 +37,24 @@ pub fn format_notification_content(
     let mut body = format!("任务「{}」耗时: {}", task_name, duration_str);
     if !is_success {
         if let Some(err) = error_message {
+            let char_count = err.chars().count();
             let truncated: String = err.chars().take(60).collect();
-            body.push_str(&format!(" | 错误: {}", truncated));
+            if char_count > 60 {
+                body.push_str(&format!(" | 错误: {}...", truncated));
+            } else {
+                body.push_str(&format!(" | 错误: {}", truncated));
+            }
         }
     }
 
     (title, body)
 }
 
-pub fn spawn_event_relay(app_handle: AppHandle, manager: Arc<AgentManager>) {
+pub fn spawn_event_relay(
+    app_handle: AppHandle,
+    manager: Arc<AgentManager>,
+    last_notification_time: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+) {
     tauri::async_runtime::spawn(async move {
         loop {
             match manager.ensure_connected().await {
@@ -91,6 +100,10 @@ pub fn spawn_event_relay(app_handle: AppHandle, manager: Arc<AgentManager>) {
                                                 duration_ms,
                                                 error_message,
                                             );
+
+                                            if let Ok(mut lock) = last_notification_time.lock() {
+                                                *lock = Some(std::time::Instant::now());
+                                            }
 
                                             let _ = app_handle
                                                 .notification()
@@ -166,5 +179,11 @@ mod tests {
         assert_eq!(title, "easyJob - 任务执行失败");
         assert!(body.contains("任务「同步任务」耗时: 1.20s"));
         assert!(body.contains(" | 错误: Network timeout"));
+        assert!(!body.ends_with("..."));
+
+        let long_err = "This is an extremely long error message that definitely exceeds sixty characters in length and needs truncation";
+        let (_, long_body) =
+            format_notification_content("Failed", "长错误任务", 500, Some(long_err));
+        assert!(long_body.ends_with("..."));
     }
 }
