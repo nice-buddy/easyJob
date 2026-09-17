@@ -457,5 +457,49 @@ describe('Pinia Stores', () => {
       expect(updated?.duration_ms).toBe(128);
       expect(updated?.exit_code).toBe(0);
     });
+
+    it('addExecution automatically merges early finished event if finished before addExecution', async () => {
+      let finishedCallback: ((payload: any) => void) | undefined;
+      vi.mocked(eventsService.onExecutionFinished).mockImplementation(async (cb) => {
+        finishedCallback = cb;
+        return vi.fn();
+      });
+
+      const store = useExecutionStore();
+      await store.initListeners();
+
+      // Simulate finished event arriving BEFORE addExecution is called
+      expect(finishedCallback).toBeDefined();
+      await finishedCallback!({
+        execution_id: 'exec-fast-20ms',
+        task_id: 'task-fast',
+        status: 'Succeeded',
+        exit_code: 0,
+        duration_ms: 22,
+        error_message: null,
+      });
+
+      // Now addExecution is called with initial 'Running' execution returned from triggerTask
+      const initialRunningExec: Execution = {
+        id: 'exec-fast-20ms',
+        task_id: 'task-fast',
+        trigger_id: null,
+        status: 'Running',
+        scheduled_at: null,
+        started_at: '2026-09-17T10:00:00Z',
+        finished_at: null,
+        duration_ms: null,
+        exit_code: null,
+        error_message: null,
+      };
+
+      store.addExecution(initialRunningExec);
+
+      // It must be merged immediately to Succeeded
+      expect(store.executions[0].id).toBe('exec-fast-20ms');
+      expect(store.executions[0].status).toBe('Succeeded');
+      expect(store.executions[0].duration_ms).toBe(22);
+      expect(store.executions[0].exit_code).toBe(0);
+    });
   });
 });

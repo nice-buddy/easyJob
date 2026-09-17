@@ -74,10 +74,9 @@ async function handleTrigger(task: Task) {
     // so we get the execution ID immediately (~2ms) with no race conditions.
     const exec = await taskStore.triggerTask(task.id);
 
-    // Seed the executionStore cache with the running execution so LiveLogDrawer
-    // can display "Running" status before any IPC event arrives.
-    executionStore.executions.unshift(exec);
-    executionStore.activeExecutionId = exec.id;
+    // Seed the executionStore cache with the execution, automatically merging
+    // any early finished event if the task completed before RPC return
+    executionStore.addExecution(exec);
 
     selectedExecutionId.value = exec.id;
     showLogDrawer.value = true;

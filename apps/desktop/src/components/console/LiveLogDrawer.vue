@@ -8,7 +8,7 @@ import { NDrawer, NDrawerContent, NButton, NTag, NSwitch, useMessage, useDialog 
 import { Square, Copy, Trash2, Terminal } from 'lucide-vue-next';
 import { useExecutionStore } from '../../stores/executionStore';
 import { getExecution } from '../../services/tauri';
-import { onExecutionFinished, onExecutionStarted } from '../../services/events';
+import { onExecutionFinished, onExecutionStarted, onExecutionOutput } from '../../services/events';
 import type { Execution } from '../../types/execution';
 import { getStatusTagType, getStatusLabel } from '../../types/execution';
 
@@ -64,20 +64,65 @@ const logLines = computed(() => {
   return rawLogs.value.slice(clearedOffset.value);
 });
 
+const isTerminalStatus = (status?: string): boolean =>
+  Boolean(status && ['Succeeded', 'Failed', 'Cancelled', 'TimedOut', 'Skipped', 'Interrupted'].includes(status));
+
 let unlistenStarted: (() => void) | null = null;
+let unlistenOutput: (() => void) | null = null;
 let unlistenFinished: (() => void) | null = null;
+let livePollTimer: ReturnType<typeof setInterval> | null = null;
+
+function clearLivePoll() {
+  if (livePollTimer) {
+    clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+}
+
+function startLivePoll(id: string) {
+  clearLivePoll();
+  livePollTimer = setInterval(async () => {
+    if (!props.show || props.executionId !== id) {
+      clearLivePoll();
+      return;
+    }
+    if (isTerminalStatus(currentExecution.value?.status)) {
+      clearLivePoll();
+      return;
+    }
+    try {
+      const fetched = await getExecution(id);
+      if (fetched) {
+        if (isTerminalStatus(fetched.status)) {
+          currentExecution.value = fetched;
+          await executionStore.fetchExecutionLogs(id, true);
+          clearLivePoll();
+        }
+      }
+    } catch {
+      // ignore transient errors
+    }
+  }, 250);
+}
 
 onMounted(async () => {
   unlistenStarted = await onExecutionStarted(async (payload) => {
     if (props.executionId && payload.execution_id === props.executionId) {
-      if (currentExecution.value) {
+      if (currentExecution.value && !isTerminalStatus(currentExecution.value.status)) {
         currentExecution.value.status = 'Running';
       }
     }
   });
 
+  unlistenOutput = await onExecutionOutput(async (payload) => {
+    if (props.executionId && payload.execution_id === props.executionId) {
+      executionStore.appendLog(payload.execution_id, payload.content);
+    }
+  });
+
   unlistenFinished = await onExecutionFinished(async (payload) => {
     if (props.executionId && payload.execution_id === props.executionId) {
+      clearLivePoll();
       if (currentExecution.value) {
         currentExecution.value.status = payload.status as any;
         if ((payload as any).duration_ms != null) {
@@ -96,8 +141,12 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  clearLivePoll();
   if (unlistenStarted) {
     unlistenStarted();
+  }
+  if (unlistenOutput) {
+    unlistenOutput();
   }
   if (unlistenFinished) {
     unlistenFinished();
@@ -108,21 +157,37 @@ onUnmounted(() => {
 watch(
   [() => props.executionId, () => props.show],
   async ([id, isShown]) => {
+    clearLivePoll();
     if (id && isShown) {
       clearedOffset.value = 0;
       const cached = executionStore.executions.find((e) => e.id === id);
+      const finished = executionStore.getFinishedExecution(id);
       if (cached) {
         currentExecution.value = { ...cached };
+      }
+      if (finished && currentExecution.value) {
+        currentExecution.value.status = finished.status;
+        if (finished.duration_ms != null) currentExecution.value.duration_ms = finished.duration_ms;
+        if (finished.exit_code != null) currentExecution.value.exit_code = finished.exit_code;
+        if (finished.error_message != null) currentExecution.value.error_message = finished.error_message;
       }
       try {
         const fetched = await getExecution(id);
         if (fetched) {
-          currentExecution.value = fetched;
+          // Never let a stale Running status overwrite an already finished status
+          if (!isTerminalStatus(currentExecution.value?.status) || fetched.status !== 'Running') {
+            currentExecution.value = fetched;
+          }
         }
       } catch {
         // use cached execution
       }
-      await executionStore.fetchExecutionLogs(id);
+      await executionStore.fetchExecutionLogs(id, true);
+
+      // Start live polling if execution is actively running or queued
+      if (currentExecution.value?.status === 'Running' || currentExecution.value?.status === 'Queued') {
+        startLivePoll(id);
+      }
     } else if (!id && isShown) {
       clearedOffset.value = 0;
       currentExecution.value = {
@@ -149,7 +214,10 @@ watch(
     if (props.executionId) {
       const match = list.find((e) => e.id === props.executionId);
       if (match) {
-        currentExecution.value = { ...match };
+        // Never let a stale Running entry in store overwrite an already finished status
+        if (!isTerminalStatus(currentExecution.value?.status) || match.status !== 'Running') {
+          currentExecution.value = { ...match };
+        }
       }
     }
   },

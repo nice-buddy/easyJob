@@ -21,10 +21,37 @@ export const useExecutionStore = defineStore('executions', () => {
   const logs = ref<Record<ExecutionId, string[]>>({});
   const activeExecutionId = ref<ExecutionId | null>(null);
   const loading = ref(false);
+  const finishedExecutions = ref<
+    Record<
+      ExecutionId,
+      {
+        status: Execution['status'];
+        duration_ms: number | null;
+        exit_code: number | null;
+        error_message: string | null;
+      }
+    >
+  >({});
 
   let isListening = false;
   let unlistenFns: UnlistenFn[] = [];
   const startedListeners = new Set<(payload: { execution_id: string; task_id: string }) => void>();
+
+  function addExecution(exec: Execution) {
+    const finished = finishedExecutions.value[exec.id];
+    if (finished) {
+      exec.status = finished.status;
+      if (finished.duration_ms != null) exec.duration_ms = finished.duration_ms;
+      if (finished.exit_code != null) exec.exit_code = finished.exit_code;
+      if (finished.error_message != null) exec.error_message = finished.error_message;
+    }
+    executions.value.unshift(exec);
+    activeExecutionId.value = exec.id;
+  }
+
+  function getFinishedExecution(id: ExecutionId) {
+    return finishedExecutions.value[id] || null;
+  }
 
   async function loadExecutions(limit = 50) {
     loading.value = true;
@@ -108,6 +135,14 @@ export const useExecutionStore = defineStore('executions', () => {
     });
 
     const unlistenFinished = await onExecutionFinished(async (payload) => {
+      // Record finished payload in finishedExecutions map to guard against race conditions
+      finishedExecutions.value[payload.execution_id] = {
+        status: payload.status as any,
+        duration_ms: (payload as any).duration_ms ?? null,
+        exit_code: payload.exit_code ?? null,
+        error_message: (payload as any).error_message ?? null,
+      };
+
       // Direct in-place reactive update for instant UI feedback
       const target = executions.value.find((e) => e.id === payload.execution_id);
       if (target) {
@@ -150,6 +185,9 @@ export const useExecutionStore = defineStore('executions', () => {
     logs,
     activeExecutionId,
     loading,
+    finishedExecutions,
+    addExecution,
+    getFinishedExecution,
     loadExecutions,
     cancelExecution,
     appendLog,
