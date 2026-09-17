@@ -123,6 +123,19 @@ impl AgentManager {
         }
     }
 
+    pub async fn shutdown_agent(&self) {
+        let client_opt = {
+            let guard = self.client.lock().await;
+            guard.clone()
+        };
+        if let Some(client) = client_opt {
+            let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+            self.disconnect().await;
+        } else if let Ok(client) = IpcClient::connect(&self.ipc_path).await {
+            let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+        }
+    }
+
     pub async fn restart_agent(&self) -> Result<bool, String> {
         info!("Restarting easyjob-agent daemon requested");
         if let Ok(client) = self.ensure_connected().await {

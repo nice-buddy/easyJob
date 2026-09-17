@@ -60,13 +60,37 @@ pub fn spawn_event_relay(app_handle: AppHandle, manager: Arc<AgentManager>) {
                                 }
 
                                 if event.event == "execution.finished" {
-                                    if let Some(policy) = event.data.get("notification_policy").and_then(|v| v.as_str()) {
-                                        let status = event.data.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                    if let Some(policy) = event
+                                        .data
+                                        .get("notification_policy")
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        let status = event
+                                            .data
+                                            .get("status")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
                                         if should_notify(policy, status) {
-                                            let task_name = event.data.get("task_name").and_then(|v| v.as_str()).unwrap_or("未命名任务");
-                                            let duration_ms = event.data.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-                                            let error_message = event.data.get("error_message").and_then(|v| v.as_str());
-                                            let (title, body) = format_notification_content(status, task_name, duration_ms, error_message);
+                                            let task_name = event
+                                                .data
+                                                .get("task_name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("未命名任务");
+                                            let duration_ms = event
+                                                .data
+                                                .get("duration_ms")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            let error_message = event
+                                                .data
+                                                .get("error_message")
+                                                .and_then(|v| v.as_str());
+                                            let (title, body) = format_notification_content(
+                                                status,
+                                                task_name,
+                                                duration_ms,
+                                                error_message,
+                                            );
 
                                             let _ = app_handle
                                                 .notification()
@@ -125,7 +149,8 @@ mod tests {
         assert_eq!(title, "easyJob - 任务执行成功");
         assert_eq!(body, "任务「备份数据」耗时: 850ms");
 
-        let (title_sec, body_sec) = format_notification_content("Succeeded", "打包日志", 2500, None);
+        let (title_sec, body_sec) =
+            format_notification_content("Succeeded", "打包日志", 2500, None);
         assert_eq!(title_sec, "easyJob - 任务执行成功");
         assert_eq!(body_sec, "任务「打包日志」耗时: 2.50s");
     }
@@ -143,4 +168,3 @@ mod tests {
         assert!(body.contains(" | 错误: Network timeout"));
     }
 }
-

@@ -43,6 +43,7 @@ pub fn set_dock_visible(_visible: bool) {}
 pub fn run() {
     let agent_manager = Arc::new(AgentManager::new());
     let manager_for_events = agent_manager.clone();
+    let manager_for_exit = agent_manager.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -91,8 +92,16 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building easyJob desktop")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Reopen { .. } = event {
+        .run(move |app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                tracing::info!("Application exit requested, shutting down agent daemon...");
+                let manager = manager_for_exit.clone();
+                tauri::async_runtime::block_on(async move {
+                    manager.shutdown_agent().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                });
+            }
+            tauri::RunEvent::Reopen { .. } => {
                 set_dock_visible(true);
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.show();
@@ -100,5 +109,6 @@ pub fn run() {
                     let _ = window.emit("navigate", "executions");
                 }
             }
+            _ => {}
         });
 }

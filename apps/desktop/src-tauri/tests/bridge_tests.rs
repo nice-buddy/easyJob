@@ -62,6 +62,7 @@ impl RequestHandler for MockAgentHandler {
                 IpcResponse::success(req.id, serde_json::to_value(exec).unwrap())
             }
             "execution.cancel" => IpcResponse::success(req.id, serde_json::json!(true)),
+            "agent.shutdown" => IpcResponse::success(req.id, serde_json::json!(true)),
             _ => IpcResponse::error(req.id, format!("Method '{}' not found", req.method)),
         }
     }
@@ -313,4 +314,56 @@ fn test_minimized_arg_detection() {
 fn test_set_dock_visible_does_not_panic() {
     easyjob_desktop_lib::set_dock_visible(false);
     easyjob_desktop_lib::set_dock_visible(true);
+}
+
+#[tokio::test]
+async fn test_agent_manager_shutdown_connected() {
+    let dir = tempdir().unwrap();
+    let sock = dir.path().join("mock_shutdown_connected.sock");
+
+    let server = IpcServer::bind(&sock, Arc::new(MockAgentHandler))
+        .await
+        .unwrap();
+    tokio::spawn(server.run());
+
+    let manager = AgentManager::with_ipc_path(sock.clone());
+    // First ensure connected so client guard is Some
+    let _ = manager.ensure_connected().await.unwrap();
+    assert!(manager.client_handle().lock().await.is_some());
+
+    // Shutdown should invoke agent.shutdown and disconnect
+    manager.shutdown_agent().await;
+    assert!(manager.client_handle().lock().await.is_none());
+}
+
+#[tokio::test]
+async fn test_agent_manager_shutdown_unconnected_running_server() {
+    let dir = tempdir().unwrap();
+    let sock = dir.path().join("mock_shutdown_unconnected.sock");
+
+    let server = IpcServer::bind(&sock, Arc::new(MockAgentHandler))
+        .await
+        .unwrap();
+    tokio::spawn(server.run());
+
+    let manager = AgentManager::with_ipc_path(sock.clone());
+    // Manager has NOT connected yet, client guard is None
+    assert!(manager.client_handle().lock().await.is_none());
+
+    // Shutdown connects directly via ipc_path and sends shutdown
+    manager.shutdown_agent().await;
+    assert!(manager.client_handle().lock().await.is_none());
+}
+
+#[tokio::test]
+async fn test_agent_manager_shutdown_offline_does_not_panic() {
+    let dir = tempdir().unwrap();
+    let sock = dir.path().join("non_existent.sock");
+
+    let manager = AgentManager::with_ipc_path(sock.clone());
+    assert!(manager.client_handle().lock().await.is_none());
+
+    // Should complete cleanly and not spawn agent or panic
+    manager.shutdown_agent().await;
+    assert!(manager.client_handle().lock().await.is_none());
 }
