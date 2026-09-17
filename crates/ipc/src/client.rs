@@ -16,6 +16,7 @@ pub struct IpcClient {
     req_tx: mpsc::Sender<IpcRequest>,
     event_tx: broadcast::Sender<IpcEvent>,
     pending_responses: Arc<Mutex<HashMap<String, oneshot::Sender<IpcResponse>>>>,
+    cancel_token: CancellationToken,
 }
 
 impl IpcClient {
@@ -107,7 +108,16 @@ impl IpcClient {
             req_tx,
             event_tx,
             pending_responses,
+            cancel_token,
         })
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.cancel_token.is_cancelled()
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {

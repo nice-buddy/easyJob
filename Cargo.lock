@@ -1147,6 +1147,7 @@ dependencies = [
  "easyjob-common",
  "easyjob-domain",
  "easyjob-ipc",
+ "notify-rust",
  "objc2",
  "serde",
  "serde_json",

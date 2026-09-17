@@ -60,68 +60,77 @@ pub fn spawn_event_relay(
             match manager.ensure_connected().await {
                 Ok(client) => {
                     let mut rx = client.subscribe();
+                    let cancel_token = client.cancellation_token();
                     info!("Event relay listening to Agent IPC broadcast");
                     loop {
-                        match rx.recv().await {
-                            Ok(event) => {
-                                if let Err(e) = app_handle.emit(&event.event, &event.data) {
-                                    error!("Failed to emit Tauri event {}: {:?}", event.event, e);
-                                }
+                        tokio::select! {
+                            _ = cancel_token.cancelled() => {
+                                warn!("Agent IPC client connection cancelled or dropped");
+                                break;
+                            }
+                            recv_res = rx.recv() => {
+                                match recv_res {
+                                    Ok(event) => {
+                                        if let Err(e) = app_handle.emit(&event.event, &event.data) {
+                                            error!("Failed to emit Tauri event {}: {:?}", event.event, e);
+                                        }
 
-                                if event.event == "execution.finished" {
-                                    if let Some(policy) = event
-                                        .data
-                                        .get("notification_policy")
-                                        .and_then(|v| v.as_str())
-                                    {
-                                        let status = event
-                                            .data
-                                            .get("status")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        if should_notify(policy, status) {
-                                            let task_name = event
+                                        if event.event == "execution.finished" {
+                                            if let Some(policy) = event
                                                 .data
-                                                .get("task_name")
+                                                .get("notification_policy")
                                                 .and_then(|v| v.as_str())
-                                                .unwrap_or("未命名任务");
-                                            let duration_ms = event
-                                                .data
-                                                .get("duration_ms")
-                                                .and_then(|v| v.as_u64())
-                                                .unwrap_or(0);
-                                            let error_message = event
-                                                .data
-                                                .get("error_message")
-                                                .and_then(|v| v.as_str());
-                                            let (title, body) = format_notification_content(
-                                                status,
-                                                task_name,
-                                                duration_ms,
-                                                error_message,
-                                            );
+                                            {
+                                                let status = event
+                                                    .data
+                                                    .get("status")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                if should_notify(policy, status) {
+                                                    let task_name = event
+                                                        .data
+                                                        .get("task_name")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("未命名任务");
+                                                    let duration_ms = event
+                                                        .data
+                                                        .get("duration_ms")
+                                                        .and_then(|v| v.as_u64())
+                                                        .unwrap_or(0);
+                                                    let error_message = event
+                                                        .data
+                                                        .get("error_message")
+                                                        .and_then(|v| v.as_str());
+                                                    let (title, body) = format_notification_content(
+                                                        status,
+                                                        task_name,
+                                                        duration_ms,
+                                                        error_message,
+                                                    );
 
-                                            if let Ok(mut lock) = last_notification_time.lock() {
-                                                *lock = Some(std::time::Instant::now());
+                                                    if let Ok(mut lock) = last_notification_time.lock() {
+                                                        *lock = Some(std::time::Instant::now());
+                                                    }
+
+                                                    let _ = app_handle
+                                                        .notification()
+                                                        .builder()
+                                                        .title(title)
+                                                        .body(body)
+                                                        .show();
+                                                }
                                             }
-
-                                            let _ = app_handle
-                                                .notification()
-                                                .builder()
-                                                .title(title)
-                                                .body(body)
-                                                .show();
                                         }
                                     }
+                                    Err(RecvError::Lagged(n)) => {
+                                        warn!("Event relay lagged by {} messages", n);
+                                        continue;
+                                    }
+                                    Err(RecvError::Closed) => {
+                                        info!("Agent event broadcast channel closed");
+                                        break;
+                                    }
                                 }
-                            }
-                            Err(RecvError::Lagged(n)) => {
-                                warn!("Event relay lagged by {} messages", n);
-                                continue;
-                            }
-                            Err(RecvError::Closed) => {
-                                info!("Agent event broadcast channel closed");
-                                break;
                             }
                         }
                     }

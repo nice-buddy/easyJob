@@ -1,6 +1,7 @@
 pub mod agent_manager;
 pub mod commands;
 pub mod events;
+pub mod macos_notification;
 pub mod tray;
 
 use agent_manager::AgentManager;
@@ -67,6 +68,7 @@ pub fn run() {
             if let Err(e) = tray::setup_system_tray(&handle) {
                 tracing::warn!("Failed to setup system tray: {:?}", e);
             }
+            macos_notification::setup_macos_notifications(&handle);
 
             // 若存在 --minimized 参数（开机自启动唤醒），保持主窗口隐藏、隐藏 Dock 图标并静默常驻系统托盘
             let args: Vec<String> = std::env::args().collect();
