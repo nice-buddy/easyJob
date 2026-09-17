@@ -3,7 +3,9 @@ use easyjob_common::{ActionId, TaskId, TriggerId};
 use easyjob_domain::{
     action::{Action, ActionKind},
     execution::{Execution, ExecutionStatus},
-    policy::{ConcurrencyPolicy, ExecutionPolicy, MissedRunPolicy, RetryPolicy},
+    policy::{
+        ConcurrencyPolicy, ExecutionPolicy, MissedRunPolicy, RetryPolicy, TaskNotificationPolicy,
+    },
     task::Task,
     trigger::{Trigger, TriggerKind},
 };
@@ -47,6 +49,7 @@ fn test_task_creation_and_serialization() {
                 delay_secs: 5,
             },
             timeout_secs: Some(300),
+            notification: TaskNotificationPolicy::None,
         },
         working_directory: None,
         environment: HashMap::new(),
@@ -96,6 +99,7 @@ fn test_policy_defaults() {
     assert_eq!(default_policy.retry_policy.max_retries, 0);
     assert_eq!(default_policy.retry_policy.delay_secs, 0);
     assert_eq!(default_policy.timeout_secs, None);
+    assert_eq!(default_policy.notification, TaskNotificationPolicy::None);
 }
 
 #[test]
@@ -171,4 +175,38 @@ fn test_execution_statuses_serialization() {
         let deserialized: ExecutionStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(status, deserialized);
     }
+}
+
+#[test]
+fn test_task_notification_policy_serialization_and_backward_compatibility() {
+    use easyjob_domain::policy::TaskNotificationPolicy;
+
+    // 1. 验证新结构包含 notification 时的完整往返序列化
+    let policy = ExecutionPolicy {
+        concurrency_policy: ConcurrencyPolicy::SkipIfRunning,
+        missed_run_policy: MissedRunPolicy::RunOnce,
+        retry_policy: RetryPolicy::default(),
+        timeout_secs: Some(60),
+        notification: TaskNotificationPolicy::OnlyFailure,
+    };
+    let json_str = serde_json::to_string(&policy).unwrap();
+    assert!(json_str.contains("\"notification\":\"OnlyFailure\""));
+    let deserialized: ExecutionPolicy = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(
+        deserialized.notification,
+        TaskNotificationPolicy::OnlyFailure
+    );
+
+    // 2. 验证向后兼容性：旧版本 JSON 没有 notification 字段时，必须默认反序列化为 TaskNotificationPolicy::None
+    let legacy_json = r#"{
+        "concurrency_policy": "AllowParallel",
+        "missed_run_policy": "Skip",
+        "retry_policy": {"max_retries": 1, "delay_secs": 2},
+        "timeout_secs": 120
+    }"#;
+    let legacy_deserialized: ExecutionPolicy = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(
+        legacy_deserialized.notification,
+        TaskNotificationPolicy::None
+    );
 }
