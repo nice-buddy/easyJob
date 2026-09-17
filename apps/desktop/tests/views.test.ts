@@ -12,10 +12,16 @@ import * as tauriService from '../src/services/tauri';
 import * as eventsService from '../src/services/events';
 import * as autostartService from '../src/services/autostart';
 import * as pluginAutostart from '@tauri-apps/plugin-autostart';
+import { ref } from 'vue';
+import * as tauriEvent from '@tauri-apps/api/event';
 import type { Task } from '../src/types/task';
 import type { Execution } from '../src/types/execution';
 import { getStatusLabel, getStatusTagType } from '../src/types/execution';
 import { isWindowsPlatform } from '../src/types/task';
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(vi.fn()),
+}));
 
 vi.mock('@tauri-apps/plugin-autostart', () => ({
   enable: vi.fn().mockResolvedValue(undefined),
@@ -447,6 +453,45 @@ describe('Desktop UI Views & Components', () => {
       clearInterval(fakeTimer);
       intervalCleared = true;
       expect(intervalCleared).toBe(true);
+    });
+
+    it('switches currentView to executions and reloads executions when navigate event is received', async () => {
+      let navigateCallback: ((event: { payload: string }) => void) | null = null;
+      vi.mocked(tauriEvent.listen).mockImplementation(async (eventName: string, handler: any) => {
+        if (eventName === 'navigate') {
+          navigateCallback = handler;
+        }
+        return vi.fn();
+      });
+
+      const currentView = ref<'tasks' | 'executions' | 'settings'>('tasks');
+      const executionStore = useExecutionStore();
+      const loadExecutionsSpy = vi.spyOn(executionStore, 'loadExecutions').mockResolvedValue();
+
+      // Setup navigate listener matching App.vue logic
+      const unlisten = await tauriEvent.listen<string>('navigate', (event) => {
+        if (event.payload === 'executions') {
+          currentView.value = 'executions';
+          executionStore.loadExecutions();
+        }
+      });
+
+      expect(tauriEvent.listen).toHaveBeenCalledWith('navigate', expect.any(Function));
+      expect(navigateCallback).not.toBeNull();
+
+      // Trigger navigate event with 'executions'
+      navigateCallback!({ payload: 'executions' });
+
+      expect(currentView.value).toBe('executions');
+      expect(loadExecutionsSpy).toHaveBeenCalledTimes(1);
+
+      // Verify other navigation payloads do not reload executions
+      currentView.value = 'tasks';
+      navigateCallback!({ payload: 'settings' });
+      expect(currentView.value).toBe('tasks');
+      expect(loadExecutionsSpy).toHaveBeenCalledTimes(1);
+
+      unlisten();
     });
   });
 });

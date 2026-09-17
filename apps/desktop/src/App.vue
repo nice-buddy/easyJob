@@ -8,6 +8,7 @@ import SettingsView from './views/SettingsView.vue';
 import { useAgentStore } from './stores/agentStore';
 import { useExecutionStore } from './stores/executionStore';
 import { initAutostartDefault } from './services/autostart';
+import { listen } from '@tauri-apps/api/event';
 
 const isDark = ref(true);
 const currentView = ref<'tasks' | 'executions' | 'settings'>('tasks');
@@ -29,6 +30,7 @@ watch(
 const agentStore = useAgentStore();
 const executionStore = useExecutionStore();
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+let unlistenNavigate: (() => void) | null = null;
 
 onMounted(async () => {
   initAutostartDefault().catch((err) => console.warn('Autostart init bypassed:', err));
@@ -38,6 +40,17 @@ onMounted(async () => {
   pollInterval = setInterval(() => {
     agentStore.fetchStatus();
   }, 5000);
+
+  try {
+    unlistenNavigate = await listen<string>('navigate', (event) => {
+      if (event.payload === 'executions') {
+        currentView.value = 'executions';
+        executionStore.loadExecutions();
+      }
+    });
+  } catch (err) {
+    console.warn('Failed to listen to navigate event:', err);
+  }
 });
 
 onUnmounted(() => {
@@ -45,6 +58,7 @@ onUnmounted(() => {
     clearInterval(pollInterval);
   }
   executionStore.cleanupListeners();
+  if (unlistenNavigate) unlistenNavigate();
 });
 </script>
 

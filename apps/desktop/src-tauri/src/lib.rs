@@ -7,7 +7,7 @@ use agent_manager::AgentManager;
 use commands::*;
 use events::spawn_event_relay;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Check if the CLI arguments contain `--minimized` (used by autostart silent launch).
 pub fn is_minimized_launch(args: &[String]) -> bool {
@@ -49,6 +49,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
         ))
+        .plugin(tauri_plugin_notification::init())
         .manage(agent_manager)
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -88,6 +89,16 @@ pub fn run() {
             get_execution_output,
             restart_agent,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running easyJob desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building easyJob desktop")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Reopen { .. } = event {
+                set_dock_visible(true);
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = window.emit("navigate", "executions");
+                }
+            }
+        });
 }
