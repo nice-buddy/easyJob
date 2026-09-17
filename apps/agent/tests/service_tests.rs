@@ -1,7 +1,7 @@
 use easyjob_agent::service::AgentService;
 use easyjob_common::{ActionId, TaskId, TriggerId};
 use easyjob_domain::action::{Action, ActionKind};
-use easyjob_domain::policy::ExecutionPolicy;
+use easyjob_domain::policy::{ExecutionPolicy, TaskNotificationPolicy};
 use easyjob_domain::task::Task;
 use easyjob_domain::trigger::{Trigger, TriggerKind};
 use easyjob_ipc::client::IpcClient;
@@ -326,6 +326,218 @@ async fn test_agent_service_execution_cancel() {
     assert_eq!(fetched["status"], "Cancelled");
 
     // Shut down cleanly
+    let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
+}
+
+#[tokio::test]
+async fn test_agent_service_task_completion_notification_policies() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("notify_test.db");
+    let socket_path = dir.path().join("notify_test.sock");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+
+    let service = AgentService::init(&db_url, &socket_path, 2)
+        .await
+        .expect("AgentService::init failed");
+    let service_handle = tokio::spawn(service.run());
+
+    let client = IpcClient::connect(&socket_path)
+        .await
+        .expect("IpcClient::connect failed");
+    let mut event_rx = client.subscribe();
+
+    // 1. Task with TaskNotificationPolicy::All (Success path)
+    let task_id_all = TaskId::new();
+    let policy_all = ExecutionPolicy {
+        notification: TaskNotificationPolicy::All,
+        ..Default::default()
+    };
+
+    let task_all = Task {
+        id: task_id_all,
+        name: "Success Notify Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![Action {
+            id: ActionId::new(),
+            task_id: task_id_all,
+            sequence: 1,
+            enabled: true,
+            kind: ActionKind::ExecuteShell {
+                command: "echo notify_all_ok".to_string(),
+            },
+        }],
+        execution_policy: policy_all,
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    client
+        .call("task.save", serde_json::json!({ "task": task_all }))
+        .await
+        .expect("task.save failed");
+
+    client
+        .call("task.trigger_now", serde_json::json!({ "id": task_id_all }))
+        .await
+        .expect("task.trigger_now failed");
+
+    let timeout_duration = Duration::from_secs(5);
+    let mut success_finished = false;
+    let start_instant = std::time::Instant::now();
+    while start_instant.elapsed() < timeout_duration {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.finished"
+                && event.data["task_id"] == task_id_all.to_string()
+            {
+                assert_eq!(event.data["status"], "Succeeded");
+                success_finished = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        success_finished,
+        "Task with Policy::All did not finish successfully"
+    );
+
+    // 2. Task with TaskNotificationPolicy::OnlyFailure (Failure path)
+    let task_id_fail = TaskId::new();
+    let policy_fail = ExecutionPolicy {
+        notification: TaskNotificationPolicy::OnlyFailure,
+        ..Default::default()
+    };
+
+    #[cfg(target_os = "windows")]
+    let fail_cmd = "powershell -Command exit 1".to_string();
+    #[cfg(not(target_os = "windows"))]
+    let fail_cmd = "false".to_string();
+
+    let task_fail = Task {
+        id: task_id_fail,
+        name: "Fail Notify Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![Action {
+            id: ActionId::new(),
+            task_id: task_id_fail,
+            sequence: 1,
+            enabled: true,
+            kind: ActionKind::ExecuteShell { command: fail_cmd },
+        }],
+        execution_policy: policy_fail,
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    client
+        .call("task.save", serde_json::json!({ "task": task_fail }))
+        .await
+        .expect("task.save failed");
+
+    client
+        .call(
+            "task.trigger_now",
+            serde_json::json!({ "id": task_id_fail }),
+        )
+        .await
+        .expect("task.trigger_now failed");
+
+    let mut fail_finished = false;
+    let start_instant = std::time::Instant::now();
+    while start_instant.elapsed() < timeout_duration {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.finished"
+                && event.data["task_id"] == task_id_fail.to_string()
+            {
+                assert_eq!(event.data["status"], "Failed");
+                fail_finished = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        fail_finished,
+        "Task with Policy::OnlyFailure did not finish as Failed"
+    );
+
+    // 3. Task with TaskNotificationPolicy::None (None path)
+    let task_id_none = TaskId::new();
+    let policy_none = ExecutionPolicy {
+        notification: TaskNotificationPolicy::None,
+        ..Default::default()
+    };
+
+    let task_none = Task {
+        id: task_id_none,
+        name: "No Notify Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![Action {
+            id: ActionId::new(),
+            task_id: task_id_none,
+            sequence: 1,
+            enabled: true,
+            kind: ActionKind::ExecuteShell {
+                command: "echo notify_none_ok".to_string(),
+            },
+        }],
+        execution_policy: policy_none,
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    client
+        .call("task.save", serde_json::json!({ "task": task_none }))
+        .await
+        .expect("task.save failed");
+
+    client
+        .call(
+            "task.trigger_now",
+            serde_json::json!({ "id": task_id_none }),
+        )
+        .await
+        .expect("task.trigger_now failed");
+
+    let mut none_finished = false;
+    let start_instant = std::time::Instant::now();
+    while start_instant.elapsed() < timeout_duration {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.finished"
+                && event.data["task_id"] == task_id_none.to_string()
+            {
+                assert_eq!(event.data["status"], "Succeeded");
+                none_finished = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        none_finished,
+        "Task with Policy::None did not finish successfully"
+    );
+
+    // 4. Shut down cleanly
     let _ = client.call("agent.shutdown", serde_json::json!({})).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
 }

@@ -1,7 +1,9 @@
 use chrono::{Duration, Utc};
 use easyjob_common::{TaskId, TriggerId};
 use easyjob_domain::action::{Action, ActionKind};
-use easyjob_domain::policy::{ConcurrencyPolicy, ExecutionPolicy, MissedRunPolicy, RetryPolicy};
+use easyjob_domain::policy::{
+    ConcurrencyPolicy, ExecutionPolicy, MissedRunPolicy, RetryPolicy, TaskNotificationPolicy,
+};
 use easyjob_domain::task::Task;
 use easyjob_domain::trigger::{Trigger, TriggerKind};
 use easyjob_scheduler::queue::{ScheduleQueue, ScheduledItem};
@@ -211,6 +213,7 @@ fn sample_task(task_id: TaskId, trigger: Trigger) -> Task {
             missed_run_policy: MissedRunPolicy::RunOnce,
             retry_policy: RetryPolicy::default(),
             timeout_secs: Some(10),
+            notification: TaskNotificationPolicy::default(),
         },
         working_directory: None,
         environment: HashMap::new(),
