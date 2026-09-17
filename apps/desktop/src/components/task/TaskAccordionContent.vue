@@ -14,7 +14,7 @@ import {
 } from 'naive-ui';
 import TriggerEditor from './TriggerEditor.vue';
 import ActionEditor from './ActionEditor.vue';
-import type { Task, ConcurrencyPolicy, MissedRunPolicy } from '../../types/task';
+import type { Task, ConcurrencyPolicy, MissedRunPolicy, TaskNotificationPolicy } from '../../types/task';
 import { getTriggerType, getActionType } from '../../types/task';
 
 const props = defineProps<{
@@ -36,6 +36,22 @@ const missedRunOptions: { label: string; value: MissedRunPolicy }[] = [
   { label: '补跑一次 (RunOnce)', value: 'RunOnce' },
   { label: '直接跳过 (Skip)', value: 'Skip' },
 ];
+
+const notificationOptions: { label: string; value: TaskNotificationPolicy }[] = [
+  { label: '不通知 (默认)', value: 'None' },
+  { label: '仅成功时通知 (OnlySuccess)', value: 'OnlySuccess' },
+  { label: '仅失败时通知 (OnlyFailure)', value: 'OnlyFailure' },
+  { label: '全部通知 (成功与失败均通知)', value: 'All' },
+];
+
+function formatNotification(policy?: string) {
+  switch (policy) {
+    case 'OnlySuccess': return '仅成功时通知';
+    case 'OnlyFailure': return '仅失败时通知';
+    case 'All': return '全部通知 (成功与失败均通知)';
+    default: return '不通知';
+  }
+}
 
 const envList = ref<{ key: string; value: string }[]>([]);
 
@@ -117,7 +133,7 @@ function removeEnv(idx: number) {
       <NCollapseItem title="执行策略" name="policy">
         <template #header-extra>
           <NTag
-            v-if="!editable && (isDiff('policy.concurrency_policy') || isDiff('policy.missed_run_policy') || isDiff('policy.timeout_secs') || isDiff('policy.retry_max_retries'))"
+            v-if="!editable && (isDiff('policy.concurrency_policy') || isDiff('policy.missed_run_policy') || isDiff('policy.timeout_secs') || isDiff('policy.retry_max_retries') || isDiff('policy.notification'))"
             size="tiny"
             type="warning"
           >
@@ -142,6 +158,10 @@ function removeEnv(idx: number) {
             <span class="text-slate-400">重试策略：</span>
             <span class="font-medium">重试 {{ task.execution_policy.retry_policy.max_retries }} 次 (延迟 {{ task.execution_policy.retry_policy.delay_secs }} 秒)</span>
           </div>
+          <div :class="['p-2 rounded', isDiff('policy.notification') ? 'bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700' : 'bg-slate-50 dark:bg-zinc-800/40']">
+            <span class="text-slate-400">结果通知：</span>
+            <span class="font-medium">{{ formatNotification(task.execution_policy.notification) }}</span>
+          </div>
         </div>
 
         <div v-else class="space-y-3 pt-1">
@@ -160,6 +180,9 @@ function removeEnv(idx: number) {
                 <NInputNumber v-model:value="task.execution_policy.retry_policy.max_retries" :min="0" class="w-full" />
               </NFormItem>
             </div>
+            <NFormItem label="执行结果通知">
+              <NSelect v-model:value="task.execution_policy.notification" :options="notificationOptions" />
+            </NFormItem>
           </NForm>
         </div>
       </NCollapseItem>

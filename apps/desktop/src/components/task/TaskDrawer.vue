@@ -20,7 +20,7 @@ import {
 } from 'naive-ui';
 import TriggerEditor from './TriggerEditor.vue';
 import ActionEditor from './ActionEditor.vue';
-import type { Task, ConcurrencyPolicy, MissedRunPolicy } from '../../types/task';
+import type { Task, ConcurrencyPolicy, MissedRunPolicy, TaskNotificationPolicy } from '../../types/task';
 import { getEmptyTask } from '../../types/task';
 import { useTaskStore } from '../../stores/taskStore';
 
@@ -60,6 +60,9 @@ watch(
   (t) => {
     if (t) {
       currentTask.value = JSON.parse(JSON.stringify(t));
+      if (!currentTask.value.execution_policy.notification) {
+        currentTask.value.execution_policy.notification = 'None';
+      }
     } else {
       currentTask.value = getEmptyTask();
     }
@@ -74,6 +77,9 @@ watch(
     if (show) {
       if (props.task) {
         currentTask.value = JSON.parse(JSON.stringify(props.task));
+        if (!currentTask.value.execution_policy.notification) {
+          currentTask.value.execution_policy.notification = 'None';
+        }
       } else {
         currentTask.value = getEmptyTask();
       }
@@ -91,6 +97,13 @@ const concurrencyOptions: { label: string; value: ConcurrencyPolicy }[] = [
 const missedRunOptions: { label: string; value: MissedRunPolicy }[] = [
   { label: '补跑一次 (RunOnce - 默认)', value: 'RunOnce' },
   { label: '直接跳过 (Skip)', value: 'Skip' },
+];
+
+const notificationOptions: { label: string; value: TaskNotificationPolicy }[] = [
+  { label: '不通知 (默认)', value: 'None' },
+  { label: '仅成功时通知 (OnlySuccess)', value: 'OnlySuccess' },
+  { label: '仅失败时通知 (OnlyFailure)', value: 'OnlyFailure' },
+  { label: '全部通知 (成功与失败均通知)', value: 'All' },
 ];
 
 async function handleSave() {
@@ -209,6 +222,13 @@ async function handleSave() {
                     />
                   </NFormItem>
                 </div>
+
+                <NFormItem label="执行结果通知">
+                  <NSelect
+                    v-model:value="currentTask.execution_policy.notification"
+                    :options="notificationOptions"
+                  />
+                </NFormItem>
               </NForm>
             </div>
           </NTabPane>

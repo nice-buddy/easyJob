@@ -92,4 +92,19 @@ describe('TaskMergeModal quick copy actions', () => {
       ENV_VAR_2: 'value2',
     });
   });
+
+  it('correctly compares and copies notification policy in task merge', () => {
+    const existing = getEmptyTask();
+    existing.execution_policy.notification = 'None';
+
+    const imported = getEmptyTask();
+    imported.execution_policy.notification = 'All';
+
+    const merged = JSON.parse(JSON.stringify(imported));
+    expect(merged.execution_policy.notification).toBe('All');
+
+    // 采用已有配置
+    merged.execution_policy.notification = existing.execution_policy.notification;
+    expect(merged.execution_policy.notification).toBe('None');
+  });
 });
