@@ -20,6 +20,7 @@ vi.mock('../src/services/tauri', () => ({
   listExecutions: vi.fn(),
   getExecution: vi.fn(),
   cancelExecution: vi.fn(),
+  getExecutionOutput: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../src/services/events', () => ({
@@ -377,6 +378,84 @@ describe('Pinia Stores', () => {
       expect(eventsService.onExecutionStarted).toHaveBeenCalledTimes(2);
       expect(eventsService.onExecutionOutput).toHaveBeenCalledTimes(2);
       expect(eventsService.onExecutionFinished).toHaveBeenCalledTimes(2);
+    });
+
+    it('waitForExecutionStarted resolves matching execution ID upon started event', async () => {
+      let startedCallback: ((payload: any) => void) | undefined;
+      vi.mocked(eventsService.onExecutionStarted).mockImplementation(async (cb) => {
+        startedCallback = cb;
+        return vi.fn();
+      });
+
+      const store = useExecutionStore();
+      const waitPromise = store.waitForExecutionStarted('task-test-target', 2000);
+
+      expect(startedCallback).toBeDefined();
+
+      // Trigger with different task ID (should be ignored)
+      startedCallback!({ execution_id: 'exec-other', task_id: 'task-other' });
+
+      // Trigger with matching task ID
+      startedCallback!({ execution_id: 'exec-matched-123', task_id: 'task-test-target' });
+
+      const resolvedId = await waitPromise;
+      expect(resolvedId).toBe('exec-matched-123');
+    });
+
+    it('waitForExecutionStarted times out and returns null when no matching event arrives', async () => {
+      vi.mocked(eventsService.onExecutionStarted).mockImplementation(async () => vi.fn());
+
+      const store = useExecutionStore();
+      const resolvedId = await store.waitForExecutionStarted('task-timeout', 50);
+      expect(resolvedId).toBeNull();
+    });
+
+    it('updates execution in-place on execution finished event', async () => {
+      let finishedCallback: ((payload: any) => void) | undefined;
+      vi.mocked(eventsService.onExecutionFinished).mockImplementation(async (cb) => {
+        finishedCallback = cb;
+        return vi.fn();
+      });
+
+      const store = useExecutionStore();
+      const initialExec: Execution = {
+        id: 'exec-running-update',
+        task_id: 'task-1',
+        trigger_id: null,
+        status: 'Running',
+        scheduled_at: null,
+        started_at: '2026-09-17T10:00:00Z',
+        finished_at: null,
+        duration_ms: null,
+        exit_code: null,
+        error_message: null,
+      };
+      store.executions = [{ ...initialExec }];
+      vi.mocked(tauriService.listExecutions).mockResolvedValue([
+        {
+          ...initialExec,
+          status: 'Succeeded',
+          duration_ms: 128,
+          exit_code: 0,
+        },
+      ]);
+
+      await store.initListeners();
+
+      expect(finishedCallback).toBeDefined();
+      await finishedCallback!({
+        execution_id: 'exec-running-update',
+        task_id: 'task-1',
+        status: 'Succeeded',
+        exit_code: 0,
+        duration_ms: 128,
+        error_message: null,
+      });
+
+      const updated = store.executions.find((e) => e.id === 'exec-running-update');
+      expect(updated?.status).toBe('Succeeded');
+      expect(updated?.duration_ms).toBe(128);
+      expect(updated?.exit_code).toBe(0);
     });
   });
 });

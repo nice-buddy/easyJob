@@ -3,11 +3,12 @@ export { getStatusTagType, getStatusLabel } from '../../types/execution';
 </script>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue';
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { NDrawer, NDrawerContent, NButton, NTag, NSwitch, useMessage, useDialog } from 'naive-ui';
 import { Square, Copy, Trash2, Terminal } from 'lucide-vue-next';
 import { useExecutionStore } from '../../stores/executionStore';
 import { getExecution } from '../../services/tauri';
+import { onExecutionFinished, onExecutionStarted } from '../../services/events';
 import type { Execution } from '../../types/execution';
 import { getStatusTagType, getStatusLabel } from '../../types/execution';
 
@@ -63,6 +64,46 @@ const logLines = computed(() => {
   return rawLogs.value.slice(clearedOffset.value);
 });
 
+let unlistenStarted: (() => void) | null = null;
+let unlistenFinished: (() => void) | null = null;
+
+onMounted(async () => {
+  unlistenStarted = await onExecutionStarted(async (payload) => {
+    if (props.executionId && payload.execution_id === props.executionId) {
+      if (currentExecution.value) {
+        currentExecution.value.status = 'Running';
+      }
+    }
+  });
+
+  unlistenFinished = await onExecutionFinished(async (payload) => {
+    if (props.executionId && payload.execution_id === props.executionId) {
+      if (currentExecution.value) {
+        currentExecution.value.status = payload.status as any;
+        if ((payload as any).duration_ms != null) {
+          currentExecution.value.duration_ms = (payload as any).duration_ms;
+        }
+        if (payload.exit_code != null) {
+          currentExecution.value.exit_code = payload.exit_code;
+        }
+        if ((payload as any).error_message != null) {
+          currentExecution.value.error_message = (payload as any).error_message;
+        }
+      }
+      await executionStore.fetchExecutionLogs(payload.execution_id, true);
+    }
+  });
+});
+
+onUnmounted(() => {
+  if (unlistenStarted) {
+    unlistenStarted();
+  }
+  if (unlistenFinished) {
+    unlistenFinished();
+  }
+});
+
 // Fetch execution details and historical output when executionId or show changes
 watch(
   [() => props.executionId, () => props.show],
@@ -82,6 +123,20 @@ watch(
         // use cached execution
       }
       await executionStore.fetchExecutionLogs(id);
+    } else if (!id && isShown) {
+      clearedOffset.value = 0;
+      currentExecution.value = {
+        id: '',
+        task_id: '',
+        trigger_id: null,
+        status: 'Queued',
+        scheduled_at: null,
+        started_at: new Date().toISOString(),
+        finished_at: null,
+        duration_ms: null,
+        exit_code: null,
+        error_message: null,
+      };
     }
   },
   { immediate: true }
@@ -218,7 +273,7 @@ async function executeCancel() {
             <div class="truncate">
               <span class="text-slate-400 dark:text-zinc-500">执行 ID: </span>
               <span class="font-mono text-slate-700 dark:text-zinc-300">
-                {{ currentExecution?.id || props.executionId || '-' }}
+                {{ currentExecution?.id || props.executionId || '生成中...' }}
               </span>
             </div>
             <div class="truncate">

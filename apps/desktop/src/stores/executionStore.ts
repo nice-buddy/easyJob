@@ -24,6 +24,7 @@ export const useExecutionStore = defineStore('executions', () => {
 
   let isListening = false;
   let unlistenFns: UnlistenFn[] = [];
+  const startedListeners = new Set<(payload: { execution_id: string; task_id: string }) => void>();
 
   async function loadExecutions(limit = 50) {
     loading.value = true;
@@ -47,14 +48,14 @@ export const useExecutionStore = defineStore('executions', () => {
       }
       logs.value[id] = [];
     }
-    logs.value[id].push(content);
+    logs.value[id] = [...logs.value[id], content];
     if (logs.value[id].length > MAX_LINES_PER_EXECUTION) {
-      logs.value[id].splice(0, logs.value[id].length - MAX_LINES_PER_EXECUTION);
+      logs.value[id] = logs.value[id].slice(logs.value[id].length - MAX_LINES_PER_EXECUTION);
     }
   }
 
-  async function fetchExecutionLogs(id: ExecutionId) {
-    if (logs.value[id] && logs.value[id].length > 0) return;
+  async function fetchExecutionLogs(id: ExecutionId, force = false) {
+    if (!force && logs.value[id] && logs.value[id].length > 0) return;
     try {
       const records = await getExecutionOutput(id);
       if (records && records.length > 0) {
@@ -65,12 +66,40 @@ export const useExecutionStore = defineStore('executions', () => {
     }
   }
 
+  function waitForExecutionStarted(taskId: string, timeout = 5000): Promise<string | null> {
+    if (!isListening) {
+      initListeners();
+    }
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const listener = (payload: { execution_id: string; task_id: string }) => {
+        if (payload.task_id === taskId) {
+          if (timer) clearTimeout(timer);
+          startedListeners.delete(listener);
+          resolve(payload.execution_id);
+        }
+      };
+      startedListeners.add(listener);
+      timer = setTimeout(() => {
+        startedListeners.delete(listener);
+        resolve(null);
+      }, timeout);
+    });
+  }
+
   // Setup event listeners
   async function initListeners() {
     if (isListening) return;
     isListening = true;
 
-    const unlistenStarted = await onExecutionStarted(() => {
+    const unlistenStarted = await onExecutionStarted((payload) => {
+      for (const listener of startedListeners) {
+        try {
+          listener(payload);
+        } catch (err) {
+          console.error(err);
+        }
+      }
       loadExecutions();
     });
 
@@ -78,8 +107,28 @@ export const useExecutionStore = defineStore('executions', () => {
       appendLog(payload.execution_id, payload.content);
     });
 
-    const unlistenFinished = await onExecutionFinished(() => {
-      loadExecutions();
+    const unlistenFinished = await onExecutionFinished(async (payload) => {
+      // Direct in-place reactive update for instant UI feedback
+      const target = executions.value.find((e) => e.id === payload.execution_id);
+      if (target) {
+        target.status = payload.status as any;
+        if ((payload as any).duration_ms != null) {
+          target.duration_ms = (payload as any).duration_ms;
+        }
+        if (payload.exit_code != null) {
+          target.exit_code = payload.exit_code;
+        }
+        if ((payload as any).error_message != null) {
+          target.error_message = (payload as any).error_message;
+        }
+      }
+      const loadPromise = loadExecutions();
+      try {
+        await fetchExecutionLogs(payload.execution_id, true);
+      } catch {
+        // Continue to sync list
+      }
+      await loadPromise;
     });
 
     unlistenFns.push(unlistenStarted, unlistenOutput, unlistenFinished);
@@ -92,6 +141,7 @@ export const useExecutionStore = defineStore('executions', () => {
       }
     }
     unlistenFns = [];
+    startedListeners.clear();
     isListening = false;
   }
 
@@ -104,6 +154,7 @@ export const useExecutionStore = defineStore('executions', () => {
     cancelExecution,
     appendLog,
     fetchExecutionLogs,
+    waitForExecutionStarted,
     initListeners,
     cleanupListeners,
   };

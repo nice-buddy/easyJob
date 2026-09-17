@@ -34,10 +34,9 @@ let unlistenNavigatePromise: Promise<() => void> | null = null;
 let isComponentMounted = true;
 
 onMounted(async () => {
+  executionStore.initListeners();
   initAutostartDefault().catch((err) => console.warn('Autostart init bypassed:', err));
   await agentStore.fetchStatus();
-
-  executionStore.initListeners();
   pollInterval = setInterval(() => {
     agentStore.fetchStatus();
   }, 5000);

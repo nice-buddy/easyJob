@@ -366,5 +366,37 @@ describe('LiveLogDrawer & Task Cancellation', () => {
       expect(match).toBeDefined();
       expect(match?.id).toBe('exec-manual-1');
     });
+
+    it('TasksView waits for execution started event and binds new execution ID', async () => {
+      const taskStore = useTaskStore();
+      const executionStore = useExecutionStore();
+
+      const sampleTask: Task = {
+        id: 'task-trigger-event-test',
+        name: 'Manual Event Task',
+        description: 'Test event binding',
+        enabled: true,
+        triggers: [],
+        actions: [],
+        execution_policy: {
+          concurrency_policy: 'AllowParallel',
+          missed_run_policy: 'Skip',
+          retry_policy: { max_retries: 0, delay_secs: 0 },
+          timeout_secs: 60,
+        },
+        version: 1,
+        created_at: '2026-09-14T10:00:00Z',
+        updated_at: '2026-09-14T10:00:00Z',
+      };
+
+      vi.mocked(tauriService.triggerTask).mockResolvedValueOnce(true);
+      vi.spyOn(executionStore, 'waitForExecutionStarted').mockResolvedValueOnce('exec-new-999');
+
+      const waitPromise = executionStore.waitForExecutionStarted(sampleTask.id, 5000);
+      await taskStore.triggerTask(sampleTask.id);
+
+      const execId = await waitPromise;
+      expect(execId).toBe('exec-new-999');
+    });
   });
 });

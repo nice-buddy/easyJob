@@ -70,17 +70,29 @@ async function handleToggleEnabled(task: Task, enabled: boolean) {
 
 async function handleTrigger(task: Task) {
   try {
+    // 提前注册 execution.started 事件监听，确保精准捕获本次下发产生的最新执行 ID，杜绝竞态匹配到历史旧执行
+    const startedPromise = executionStore.waitForExecutionStarted(task.id, 5000);
+
+    selectedExecutionId.value = null;
+    executionStore.activeExecutionId = null;
+    showLogDrawer.value = true;
+
     await taskStore.triggerTask(task.id);
     message.success(`已下发执行指令: ${task.name}`);
-    await executionStore.loadExecutions();
-    const match = executionStore.executions.find((e) => e.task_id === task.id);
-    if (match) {
-      selectedExecutionId.value = match.id;
-      executionStore.activeExecutionId = match.id;
+
+    const execId = await startedPromise;
+    if (execId) {
+      selectedExecutionId.value = execId;
+      executionStore.activeExecutionId = execId;
     } else {
-      selectedExecutionId.value = executionStore.executions[0]?.id || null;
+      // 容错降级：若广播由于极端情况延迟，重新加载执行记录并匹配最新记录
+      await executionStore.loadExecutions();
+      const match = executionStore.executions.find((e) => e.task_id === task.id);
+      if (match) {
+        selectedExecutionId.value = match.id;
+        executionStore.activeExecutionId = match.id;
+      }
     }
-    showLogDrawer.value = true;
   } catch (e: any) {
     message.error('触发失败: ' + (e?.message || e));
   }
