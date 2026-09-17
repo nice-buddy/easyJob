@@ -3,12 +3,14 @@ import { ref, onMounted } from 'vue';
 import { useAgentStore } from '../stores/agentStore';
 import { NCard, NDescriptions, NDescriptionsItem, NButton, NSwitch, useMessage } from 'naive-ui';
 import { setAutostart, initAutostartDefault } from '../services/autostart';
+import { restartAgent } from '../services/tauri';
 
 const agentStore = useAgentStore();
 const message = useMessage();
 
 const autostartLoading = ref(false);
 const autostartActive = ref(true);
+const restartingAgent = ref(false);
 
 onMounted(async () => {
   try {
@@ -17,6 +19,19 @@ onMounted(async () => {
     autostartActive.value = false;
   }
 });
+
+async function handleRestartAgent() {
+  restartingAgent.value = true;
+  try {
+    await restartAgent();
+    message.success('Agent 守护进程已成功重启');
+    await agentStore.fetchStatus();
+  } catch (e: any) {
+    message.error('重启守护进程失败: ' + (e?.message || e));
+  } finally {
+    restartingAgent.value = false;
+  }
+}
 
 async function handleToggleAutostart(value: boolean) {
   autostartLoading.value = true;
@@ -80,9 +95,14 @@ async function handleToggleAutostart(value: boolean) {
       </NDescriptions>
 
       <template #action>
-        <NButton size="small" secondary @click="agentStore.fetchStatus()">
-          重新检测连接
-        </NButton>
+        <div class="flex items-center gap-3">
+          <NButton size="small" secondary :loading="restartingAgent" @click="handleRestartAgent">
+            重启守护进程
+          </NButton>
+          <NButton size="small" secondary @click="agentStore.fetchStatus()">
+            重新检测连接
+          </NButton>
+        </div>
       </template>
     </NCard>
   </div>

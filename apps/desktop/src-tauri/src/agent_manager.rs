@@ -123,6 +123,18 @@ impl AgentManager {
         }
     }
 
+    pub async fn restart_agent(&self) -> Result<bool, String> {
+        info!("Restarting easyjob-agent daemon requested");
+        if let Ok(client) = self.ensure_connected().await {
+            let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+        }
+        self.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Self::spawn_agent_process()?;
+        self.ensure_connected().await?;
+        Ok(true)
+    }
+
     fn find_agent_binary() -> Result<PathBuf, String> {
         #[cfg(target_os = "windows")]
         let bin_name = "easyjob-agent.exe";

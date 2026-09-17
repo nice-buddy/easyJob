@@ -49,3 +49,7 @@ export async function getExecutionOutput(id: ExecutionId): Promise<ExecutionOutp
   return await invoke<ExecutionOutputRecord[]>('get_execution_output', { id });
 }
 
+export async function restartAgent(): Promise<boolean> {
+  return await invoke<boolean>('restart_agent');
+}
+

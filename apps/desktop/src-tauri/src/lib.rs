@@ -86,6 +86,7 @@ pub fn run() {
             get_execution,
             cancel_execution,
             get_execution_output,
+            restart_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running easyJob desktop");

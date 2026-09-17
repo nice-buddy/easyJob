@@ -103,3 +103,8 @@ pub async fn get_execution_output(
         .call("execution.get_output", serde_json::json!({ "id": id }))
         .await
 }
+
+#[tauri::command]
+pub async fn restart_agent(manager: State<'_, Arc<AgentManager>>) -> Result<bool, String> {
+    manager.restart_agent().await
+}
