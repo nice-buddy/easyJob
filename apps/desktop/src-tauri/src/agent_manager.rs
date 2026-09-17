@@ -124,34 +124,60 @@ impl AgentManager {
     }
 
     fn find_agent_binary() -> Result<PathBuf, String> {
+        #[cfg(target_os = "windows")]
+        let bin_name = "easyjob-agent.exe";
+        #[cfg(not(target_os = "windows"))]
+        let bin_name = "easyjob-agent";
+
         if let Ok(current_exe) = std::env::current_exe() {
             let mut dir = current_exe;
             dir.pop();
-            #[cfg(target_os = "windows")]
-            let bin_name = "easyjob-agent.exe";
-            #[cfg(not(target_os = "windows"))]
-            let bin_name = "easyjob-agent";
 
+            // 1. Next to current executable (e.g. MacOS/easyjob-agent or Program Files\easyJob\easyjob-agent.exe)
             let target_bin = dir.join(bin_name);
             if target_bin.exists() {
                 return Ok(target_bin);
             }
 
+            // 2. In target/debug or target/release if run from target/debug/deps
             if dir.ends_with("deps") {
                 dir.pop();
+                let target_bin = dir.join(bin_name);
+                if target_bin.exists() {
+                    return Ok(target_bin);
+                }
             }
-            let target_bin = dir.join(bin_name);
-            if target_bin.exists() {
-                return Ok(target_bin);
+
+            // 3. In Resources directory (macOS app bundle: Contents/Resources/easyjob-agent)
+            let resources_bin = dir.join("../Resources").join(bin_name);
+            if resources_bin.exists() {
+                return Ok(resources_bin);
+            }
+
+            // 4. In src-tauri/binaries (development fallback)
+            let binaries_bin = dir.join("binaries").join(bin_name);
+            if binaries_bin.exists() {
+                return Ok(binaries_bin);
             }
         }
 
-        // Search PATH fallback
-        Ok(PathBuf::from("easyjob-agent"))
+        // 5. Search relative to current working directory (e.g. target/release or target/debug)
+        if let Ok(cwd) = std::env::current_dir() {
+            for sub in &["target/release", "target/debug"] {
+                let candidate = cwd.join(sub).join(bin_name);
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+
+        // 6. Search PATH fallback
+        Ok(PathBuf::from(bin_name))
     }
 
     fn spawn_agent_process() -> Result<(), String> {
         let bin = Self::find_agent_binary()?;
+        info!("Spawning easyjob-agent daemon from: {:?}", bin);
         let mut cmd = std::process::Command::new(bin);
         cmd.arg("--daemon");
         cmd.stdin(std::process::Stdio::null())
