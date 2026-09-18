@@ -402,15 +402,21 @@ mod platform_windows {
 
     unsafe extern "system" fn ip_callback(
         caller_context: *const c_void,
-        _row: *const MIB_IPINTERFACE_ROW,
+        row: *const MIB_IPINTERFACE_ROW,
         notification_type: MIB_NOTIFICATION_TYPE,
     ) {
         // 借用泄漏的强引用（不取得所有权，不改变引用计数）
         let state = std::mem::ManuallyDrop::new(unsafe {
             Arc::from_raw(caller_context as *const WatcherState)
         });
-        // MibParameterNotification 也可能是地址变更（连接）；仅 MibDeleteInstance 视为断开
-        let event = if notification_type == MibDeleteInstance {
+        // MIB_IPINTERFACE_ROW 没有 OperStatus，只有 Connected（是否已连到网络接入点）。
+        // MibDeleteInstance = 接口行被移除；其余通知必须按 Connected 判定，
+        // 否则拔网线 / 禁用网卡（参数变更且 Connected=false）会被误报成 Connect。
+        //
+        // 已知残留：接口仍连接时的纯参数变更（MTU / metric / DNS）Connected 仍为 true，
+        // 会误报一次 Connect。彻底消除需按 InterfaceLuid 维护状态迁移表，本次不做。
+        let connected = !row.is_null() && unsafe { (*row).Connected };
+        let event = if notification_type == MibDeleteInstance || !connected {
             NetworkEvent::Disconnect { ssid: None }
         } else {
             NetworkEvent::Connect {
