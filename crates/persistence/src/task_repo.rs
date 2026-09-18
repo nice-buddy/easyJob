@@ -182,7 +182,7 @@ impl TaskRepository for SqliteTaskRepository {
             .map_err(|e| Error::Database(e.to_string()))?;
 
         for trigger in &task.triggers {
-            let kind_str = format!("{:?}", trigger.kind);
+            let kind_str = trigger.kind.kind_name().to_string();
             let config_json = serde_json::to_string(trigger)?;
             sqlx::query(
                 "INSERT INTO triggers (id, task_id, kind, config_json, enabled, created_at, updated_at)
