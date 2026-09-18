@@ -100,6 +100,8 @@ pub fn run() {
             cancel_execution,
             get_execution_output,
             restart_agent,
+            get_system_settings,
+            save_system_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building easyJob desktop")
@@ -118,7 +120,7 @@ pub fn run() {
                     let _ = window.show();
                     let _ = window.set_focus();
 
-                    // 仅当最近 30 秒内触发过通知（横幅点击唤起场景）时，自动跳转到执行记录
+                    // 仅当最近 30 秒内触发过通知（横幅点击唤起场景）时，自动跳转到执行日志
                     let should_navigate = {
                         if let Ok(mut lock) = last_notification_for_reopen.lock() {
                             if let Some(t) = *lock {

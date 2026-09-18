@@ -2,6 +2,7 @@ use crate::agent_manager::AgentManager;
 use easyjob_common::{ExecutionId, TaskId};
 use easyjob_domain::execution::Execution;
 use easyjob_domain::task::Task;
+use easyjob_domain::SystemSettings;
 use easyjob_ipc::protocol::AgentStatus;
 use std::sync::Arc;
 use tauri::State;
@@ -107,4 +108,23 @@ pub async fn get_execution_output(
 #[tauri::command]
 pub async fn restart_agent(manager: State<'_, Arc<AgentManager>>) -> Result<bool, String> {
     manager.restart_agent().await
+}
+
+#[tauri::command]
+pub async fn get_system_settings(
+    manager: State<'_, Arc<AgentManager>>,
+) -> Result<SystemSettings, String> {
+    let val = manager.call("settings.get", serde_json::json!({})).await?;
+    serde_json::from_value(val).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_system_settings(
+    settings: SystemSettings,
+    manager: State<'_, Arc<AgentManager>>,
+) -> Result<SystemSettings, String> {
+    let val = manager
+        .call("settings.set", serde_json::json!({ "settings": settings }))
+        .await?;
+    serde_json::from_value(val).map_err(|e| e.to_string())
 }
