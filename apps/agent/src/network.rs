@@ -45,15 +45,20 @@ pub fn name_matches(ev: &NetworkEvent, network_name: &Option<String>) -> bool {
     }
 }
 
-/// 共享 Online 探测：TCP 1.1.1.1:80（2s 超时），失败 fallback DNS 解析 example.com
-pub async fn probe_online() -> bool {
-    if tokio::time::timeout(
+/// 单个 TCP 地址可达性探测：2s 超时，且内层 connect 结果必须为 Ok
+async fn tcp_reachable(addr: &str) -> bool {
+    tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        tokio::net::TcpStream::connect("1.1.1.1:80"),
+        tokio::net::TcpStream::connect(addr),
     )
     .await
-    .is_ok()
-    {
+    .map(|res| res.is_ok())
+    .unwrap_or(false)
+}
+
+/// 共享 Online 探测：TCP 1.1.1.1:80（2s 超时），失败 fallback DNS 解析 example.com
+pub async fn probe_online() -> bool {
+    if tcp_reachable("1.1.1.1:80").await {
         return true;
     }
     tokio::time::timeout(
@@ -153,6 +158,22 @@ mod tests {
         assert!(!name_matches(&connect(Some("myhome")), &name));
         assert!(!name_matches(&connect(None), &name));
         assert!(!name_matches(&connect(Some("MyHome2")), &name));
+    }
+
+    #[tokio::test]
+    async fn tcp_reachable_true_for_listening_port() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        assert!(tcp_reachable(&addr).await);
+    }
+
+    #[tokio::test]
+    async fn tcp_reachable_false_for_closed_port() {
+        // 先占端口再立即释放，确保回环上该端口无人监听（避免 flaky 的固定端口假设）
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        assert!(!tcp_reachable(&addr).await);
     }
 
     fn task_with_network_trigger(
