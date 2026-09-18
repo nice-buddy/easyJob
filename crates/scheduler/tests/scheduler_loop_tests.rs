@@ -214,6 +214,7 @@ fn sample_task(task_id: TaskId, trigger: Trigger) -> Task {
             retry_policy: RetryPolicy::default(),
             timeout_secs: Some(10),
             notification: TaskNotificationPolicy::default(),
+            log_retention: easyjob_domain::LogRetentionPolicy::SystemDefault,
         },
         working_directory: None,
         environment: HashMap::new(),

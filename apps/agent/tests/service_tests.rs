@@ -1,11 +1,15 @@
-use easyjob_agent::service::AgentService;
+use easyjob_agent::service::{AgentRpcHandler, AgentService};
 use easyjob_common::{ActionId, TaskId, TriggerId};
 use easyjob_domain::action::{Action, ActionKind};
 use easyjob_domain::policy::{ExecutionPolicy, TaskNotificationPolicy};
 use easyjob_domain::task::Task;
 use easyjob_domain::trigger::{Trigger, TriggerKind};
 use easyjob_ipc::client::IpcClient;
+use easyjob_ipc::protocol::IpcRequest;
+use easyjob_ipc::server::RequestHandler;
+use easyjob_persistence::{ExecutionRepository, SettingsRepository, TaskRepository};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -626,4 +630,311 @@ async fn test_execution_finished_event_contains_notification_metadata() {
 
     let _ = client.call("agent.shutdown", serde_json::json!({})).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
+}
+
+async fn setup_test_agent_handler() -> (AgentRpcHandler, tempfile::TempDir) {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("agent_test.db");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+    let pool = easyjob_persistence::init_pool(&db_url).await.unwrap();
+
+    let task_repo = Arc::new(easyjob_persistence::SqliteTaskRepository::new(pool.clone()));
+    let exec_repo = Arc::new(easyjob_persistence::SqliteExecutionRepository::new(
+        pool.clone(),
+    ));
+    let settings_repo = Arc::new(easyjob_persistence::SqliteSettingsRepository::new(
+        pool.clone(),
+    ));
+    let exec_manager = Arc::new(easyjob_executor::manager::ExecutionManager::new(4));
+
+    let (scheduler_tx, _scheduler_rx) = tokio::sync::mpsc::channel(100);
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let active_executions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let (event_tx, _) = tokio::sync::broadcast::channel(1024);
+    let exec_cancel_token = tokio_util::sync::CancellationToken::new();
+
+    let handler = AgentRpcHandler::new(
+        task_repo,
+        exec_repo,
+        settings_repo,
+        exec_manager,
+        scheduler_tx,
+        std::time::Instant::now(),
+        shutdown_notify,
+        active_executions,
+        event_tx,
+        exec_cancel_token,
+    );
+
+    (handler, dir)
+}
+
+#[tokio::test]
+async fn test_agent_settings_ipc() {
+    let (handler, _dir) = setup_test_agent_handler().await;
+
+    // 1. settings.get
+    let req = IpcRequest::new("settings.get", serde_json::json!({}));
+    let res = handler.handle_request(req).await;
+    assert!(
+        res.ok,
+        "Expected settings.get to succeed, got: {:?}",
+        res.error
+    );
+    let settings: easyjob_domain::SystemSettings =
+        serde_json::from_value(res.data.unwrap()).unwrap();
+    assert_eq!(
+        settings.default_log_retention,
+        easyjob_domain::SystemLogRetention::KeepDays(7)
+    );
+
+    // 2. settings.set
+    let updated = easyjob_domain::SystemSettings {
+        default_log_retention: easyjob_domain::SystemLogRetention::KeepDays(14),
+    };
+    let set_req = IpcRequest::new("settings.set", serde_json::json!({ "settings": updated }));
+    let set_res = handler.handle_request(set_req).await;
+    assert!(
+        set_res.ok,
+        "Expected settings.set to succeed, got: {:?}",
+        set_res.error
+    );
+
+    // 3. 再次 get 验证更新生效
+    let verify_req = IpcRequest::new("settings.get", serde_json::json!({}));
+    let verify_res = handler.handle_request(verify_req).await;
+    let current: easyjob_domain::SystemSettings =
+        serde_json::from_value(verify_res.data.unwrap()).unwrap();
+    assert_eq!(
+        current.default_log_retention,
+        easyjob_domain::SystemLogRetention::KeepDays(14)
+    );
+}
+
+#[tokio::test]
+async fn test_agent_log_retention_purge_on_task_completion() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("purge_test.db");
+    let socket_path = dir.path().join("purge_test.sock");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+
+    let service = AgentService::init(&db_url, &socket_path, 2)
+        .await
+        .expect("AgentService::init failed");
+    let exec_repo = service.execution_repository();
+    let service_handle = tokio::spawn(service.run());
+
+    let client = IpcClient::connect(&socket_path)
+        .await
+        .expect("IpcClient::connect failed");
+    let mut event_rx = client.subscribe();
+
+    // 1. Create a task with 3-day retention
+    let task_id = TaskId::new();
+    let task = Task {
+        id: task_id,
+        name: "Purge Test Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![Action {
+            id: ActionId::new(),
+            task_id,
+            sequence: 1,
+            enabled: true,
+            kind: ActionKind::ExecuteShell {
+                command: "echo purge_test".to_string(),
+            },
+        }],
+        execution_policy: ExecutionPolicy {
+            log_retention: easyjob_domain::LogRetentionPolicy::KeepDays(3),
+            ..Default::default()
+        },
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    client
+        .call("task.save", serde_json::json!({ "task": task }))
+        .await
+        .expect("task.save failed");
+
+    // 2. Pre-insert an expired execution (10 days ago) and a recent one (1 day ago)
+    let expired_exec_id = easyjob_common::ExecutionId::new();
+    let mut expired_exec = easyjob_domain::execution::Execution::new(task_id, None, None);
+    expired_exec.id = expired_exec_id;
+    expired_exec.status = easyjob_domain::execution::ExecutionStatus::Succeeded;
+    expired_exec.started_at = chrono::Utc::now() - chrono::Duration::days(10);
+    expired_exec.finished_at = Some(chrono::Utc::now() - chrono::Duration::days(10));
+    exec_repo.create_run(&expired_exec).await.unwrap();
+
+    let recent_exec_id = easyjob_common::ExecutionId::new();
+    let mut recent_exec = easyjob_domain::execution::Execution::new(task_id, None, None);
+    recent_exec.id = recent_exec_id;
+    recent_exec.status = easyjob_domain::execution::ExecutionStatus::Succeeded;
+    recent_exec.started_at = chrono::Utc::now() - chrono::Duration::days(1);
+    recent_exec.finished_at = Some(chrono::Utc::now() - chrono::Duration::days(1));
+    exec_repo.create_run(&recent_exec).await.unwrap();
+
+    // Verify both runs exist before triggering
+    assert!(exec_repo
+        .find_run_by_id(&expired_exec_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(exec_repo
+        .find_run_by_id(&recent_exec_id)
+        .await
+        .unwrap()
+        .is_some());
+
+    // 3. Trigger task manually
+    let trigger_res = client
+        .call("task.trigger_now", serde_json::json!({ "id": task_id }))
+        .await
+        .expect("task.trigger_now failed");
+    let new_exec_id: easyjob_common::ExecutionId =
+        serde_json::from_value(trigger_res["id"].clone()).unwrap();
+
+    // 4. Wait for execution.finished event
+    let timeout_duration = Duration::from_secs(5);
+    let start_instant = std::time::Instant::now();
+    let mut finished = false;
+    while start_instant.elapsed() < timeout_duration {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.finished" && event.data["task_id"] == task_id.to_string() {
+                finished = true;
+                break;
+            }
+        }
+    }
+    assert!(finished, "execution.finished not received");
+
+    // 5. Poll for expired execution to be purged by the non-blocking background hook
+    let purge_timeout = Duration::from_secs(5);
+    let purge_start = std::time::Instant::now();
+    let mut expired_purged = false;
+    while purge_start.elapsed() < purge_timeout {
+        if exec_repo
+            .find_run_by_id(&expired_exec_id)
+            .await
+            .unwrap()
+            .is_none()
+        {
+            expired_purged = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        expired_purged,
+        "Expired execution run was not purged by hook"
+    );
+
+    // 6. Verify recent run and newly completed run still exist
+    assert!(exec_repo
+        .find_run_by_id(&recent_exec_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(exec_repo
+        .find_run_by_id(&new_exec_id)
+        .await
+        .unwrap()
+        .is_some());
+
+    // 7. Cleanup
+    let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
+}
+
+#[tokio::test]
+async fn test_trigger_log_retention_purge_helper_policies() {
+    let (handler, _dir) = setup_test_agent_handler().await;
+    let exec_repo = handler.execution_repository();
+    let settings_repo = handler.settings_repository();
+    let task_repo = handler.task_repository();
+
+    // Set system default to 5 days
+    settings_repo
+        .save_system_settings(&easyjob_domain::SystemSettings {
+            default_log_retention: easyjob_domain::SystemLogRetention::KeepDays(5),
+        })
+        .await
+        .unwrap();
+
+    let task_id = TaskId::new();
+    let mut task = Task {
+        id: task_id,
+        name: "Retention Helper Test".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![],
+        execution_policy: ExecutionPolicy {
+            log_retention: easyjob_domain::LogRetentionPolicy::SystemDefault,
+            ..Default::default()
+        },
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    task_repo.save(&task).await.unwrap();
+
+    // Old run (7 days ago)
+    let run1_id = easyjob_common::ExecutionId::new();
+    let mut run1 = easyjob_domain::execution::Execution::new(task_id, None, None);
+    run1.id = run1_id;
+    run1.status = easyjob_domain::execution::ExecutionStatus::Succeeded;
+    run1.started_at = chrono::Utc::now() - chrono::Duration::days(7);
+    run1.finished_at = Some(chrono::Utc::now() - chrono::Duration::days(7));
+    exec_repo.create_run(&run1).await.unwrap();
+
+    // Trigger purge with SystemDefault (which resolves to 5 days)
+    easyjob_agent::service::trigger_log_retention_purge(
+        &task,
+        settings_repo.clone(),
+        exec_repo.clone(),
+    );
+
+    // Wait for background spawn
+    let purge_timeout = Duration::from_secs(3);
+    let purge_start = std::time::Instant::now();
+    let mut run1_purged = false;
+    while purge_start.elapsed() < purge_timeout {
+        if exec_repo.find_run_by_id(&run1_id).await.unwrap().is_none() {
+            run1_purged = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(run1_purged, "Expired execution run1 was not purged");
+
+    // Now test Permanent policy: run older than 100 days should NOT be purged
+    task.execution_policy.log_retention = easyjob_domain::LogRetentionPolicy::Permanent;
+    let run2_id = easyjob_common::ExecutionId::new();
+    let mut run2 = easyjob_domain::execution::Execution::new(task_id, None, None);
+    run2.id = run2_id;
+    run2.status = easyjob_domain::execution::ExecutionStatus::Succeeded;
+    run2.started_at = chrono::Utc::now() - chrono::Duration::days(100);
+    run2.finished_at = Some(chrono::Utc::now() - chrono::Duration::days(100));
+    exec_repo.create_run(&run2).await.unwrap();
+
+    easyjob_agent::service::trigger_log_retention_purge(
+        &task,
+        settings_repo.clone(),
+        exec_repo.clone(),
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        exec_repo.find_run_by_id(&run2_id).await.unwrap().is_some(),
+        "Permanent policy should not purge runs"
+    );
 }

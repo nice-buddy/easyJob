@@ -10,6 +10,7 @@ use easyjob_ipc::server::{IpcServer, RequestHandler};
 use easyjob_persistence::db::init_pool;
 use easyjob_persistence::execution_repo::{ExecutionRepository, SqliteExecutionRepository};
 use easyjob_persistence::recovery::recover_dangling_executions;
+use easyjob_persistence::settings_repo::{SettingsRepository, SqliteSettingsRepository};
 use easyjob_persistence::task_repo::{SqliteTaskRepository, TaskRepository};
 use easyjob_scheduler::scheduler::{Scheduler, SchedulerCommand, TriggerEvent};
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ use tracing::{error, info};
 pub struct AgentService {
     task_repo: Arc<SqliteTaskRepository>,
     exec_repo: Arc<SqliteExecutionRepository>,
+    settings_repo: Arc<SqliteSettingsRepository>,
     exec_manager: Arc<ExecutionManager>,
     scheduler_tx: mpsc::Sender<SchedulerCommand>,
     event_rx: mpsc::Receiver<TriggerEvent>,
@@ -43,6 +45,7 @@ impl AgentService {
 
         let task_repo = Arc::new(SqliteTaskRepository::new(pool.clone()));
         let exec_repo = Arc::new(SqliteExecutionRepository::new(pool.clone()));
+        let settings_repo = Arc::new(SqliteSettingsRepository::new(pool.clone()));
         let exec_manager = Arc::new(ExecutionManager::new(max_concurrent));
 
         let (event_tx, event_rx) = mpsc::channel(100);
@@ -86,6 +89,7 @@ impl AgentService {
         let handler = Arc::new(AgentRpcHandler {
             task_repo: task_repo.clone(),
             exec_repo: exec_repo.clone(),
+            settings_repo: settings_repo.clone(),
             exec_manager: exec_manager.clone(),
             scheduler_tx: scheduler_tx.clone(),
             start_time,
@@ -100,6 +104,7 @@ impl AgentService {
         Ok(Self {
             task_repo,
             exec_repo,
+            settings_repo,
             exec_manager,
             scheduler_tx,
             event_rx,
@@ -119,6 +124,10 @@ impl AgentService {
 
     pub fn execution_repository(&self) -> Arc<SqliteExecutionRepository> {
         self.exec_repo.clone()
+    }
+
+    pub fn settings_repository(&self) -> Arc<SqliteSettingsRepository> {
+        self.settings_repo.clone()
     }
 
     pub fn execution_manager(&self) -> Arc<ExecutionManager> {
@@ -141,6 +150,7 @@ impl AgentService {
         let event_tx = self.ipc_server.event_sender();
         let task_repo = self.task_repo.clone();
         let exec_repo = self.exec_repo.clone();
+        let settings_repo = self.settings_repo.clone();
         let exec_manager = self.exec_manager.clone();
         let active_executions = self.active_executions.clone();
         // Use the shared token so both the dispatcher and handler's trigger_now
@@ -187,6 +197,7 @@ impl AgentService {
                         }
 
                         let e_repo = exec_repo.clone();
+                        let s_repo = settings_repo.clone();
                         let e_manager = exec_manager.clone();
                         let active_execs = active_executions.clone();
                         let ev_tx = event_tx.clone();
@@ -297,6 +308,8 @@ impl AgentService {
                                 error!("Failed to update execution run {}: {:?}", exec.id, e);
                             }
 
+                            trigger_log_retention_purge(&task, s_repo, e_repo.clone());
+
                             let _ = ev_tx.send(IpcEvent::new(
                                 "execution.finished",
                                 serde_json::json!({
@@ -352,9 +365,50 @@ impl AgentService {
     }
 }
 
+pub fn trigger_log_retention_purge(
+    task: &easyjob_domain::task::Task,
+    settings_repo: Arc<SqliteSettingsRepository>,
+    exec_repo: Arc<SqliteExecutionRepository>,
+) {
+    let policy = task.execution_policy.log_retention;
+    let task_id = task.id;
+
+    tokio::spawn(async move {
+        let retention_days: Option<u32> = match policy {
+            easyjob_domain::policy::LogRetentionPolicy::SystemDefault => {
+                let sys = settings_repo
+                    .get_system_settings()
+                    .await
+                    .unwrap_or_default();
+                match sys.default_log_retention {
+                    easyjob_domain::policy::SystemLogRetention::KeepDays(days) => Some(days),
+                    easyjob_domain::policy::SystemLogRetention::Permanent => None,
+                }
+            }
+            easyjob_domain::policy::LogRetentionPolicy::KeepDays(days) => Some(days),
+            easyjob_domain::policy::LogRetentionPolicy::Permanent => None,
+        };
+
+        if let Some(days) = retention_days {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
+            match exec_repo.purge_expired_runs(&task_id, cutoff).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!("Purged {} expired runs for task {}", count, task_id);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to purge expired runs for task {}: {:?}", task_id, e);
+                }
+            }
+        }
+    });
+}
+
 pub struct AgentRpcHandler {
     pub(crate) task_repo: Arc<SqliteTaskRepository>,
     pub(crate) exec_repo: Arc<SqliteExecutionRepository>,
+    pub(crate) settings_repo: Arc<SqliteSettingsRepository>,
     pub(crate) exec_manager: Arc<ExecutionManager>,
     pub(crate) scheduler_tx: mpsc::Sender<SchedulerCommand>,
     pub(crate) start_time: Instant,
@@ -367,8 +421,43 @@ pub struct AgentRpcHandler {
 }
 
 impl AgentRpcHandler {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        task_repo: Arc<SqliteTaskRepository>,
+        exec_repo: Arc<SqliteExecutionRepository>,
+        settings_repo: Arc<SqliteSettingsRepository>,
+        exec_manager: Arc<ExecutionManager>,
+        scheduler_tx: mpsc::Sender<SchedulerCommand>,
+        start_time: Instant,
+        shutdown_notify: Arc<Notify>,
+        active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
+        event_tx: broadcast::Sender<IpcEvent>,
+        exec_cancel_token: CancellationToken,
+    ) -> Self {
+        Self {
+            task_repo,
+            exec_repo,
+            settings_repo,
+            exec_manager,
+            scheduler_tx,
+            start_time,
+            shutdown_notify,
+            active_executions,
+            event_tx,
+            exec_cancel_token,
+        }
+    }
+
     pub fn execution_repository(&self) -> Arc<SqliteExecutionRepository> {
         self.exec_repo.clone()
+    }
+
+    pub fn settings_repository(&self) -> Arc<SqliteSettingsRepository> {
+        self.settings_repo.clone()
+    }
+
+    pub fn task_repository(&self) -> Arc<SqliteTaskRepository> {
+        self.task_repo.clone()
     }
 }
 
@@ -392,6 +481,38 @@ impl RequestHandler for AgentRpcHandler {
             "agent.shutdown" => {
                 self.shutdown_notify.notify_waiters();
                 IpcResponse::success(req.id, serde_json::json!(true))
+            }
+            "settings.get" => match self.settings_repo.get_system_settings().await {
+                Ok(s) => match serde_json::to_value(s) {
+                    Ok(v) => IpcResponse::success(req.id, v),
+                    Err(e) => IpcResponse::error(req.id, e.to_string()),
+                },
+                Err(e) => IpcResponse::error(req.id, e.to_string()),
+            },
+            "settings.set" => {
+                let settings_val = if req.params.is_object() && req.params.get("settings").is_some()
+                {
+                    &req.params["settings"]
+                } else {
+                    &req.params
+                };
+                let settings: easyjob_domain::SystemSettings =
+                    match serde_json::from_value(settings_val.clone()) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return IpcResponse::error(
+                                req.id,
+                                format!("Invalid settings parameter: {}", e),
+                            )
+                        }
+                    };
+                match self.settings_repo.save_system_settings(&settings).await {
+                    Ok(()) => match serde_json::to_value(&settings) {
+                        Ok(v) => IpcResponse::success(req.id, v),
+                        Err(e) => IpcResponse::error(req.id, e.to_string()),
+                    },
+                    Err(e) => IpcResponse::error(req.id, e.to_string()),
+                }
             }
             "task.list" => match self.task_repo.find_all().await {
                 Ok(tasks) => match serde_json::to_value(tasks) {
@@ -568,6 +689,7 @@ impl RequestHandler for AgentRpcHandler {
 
                 // Spawn the actual task execution in the background
                 let e_repo = self.exec_repo.clone();
+                let s_repo = self.settings_repo.clone();
                 let e_manager = self.exec_manager.clone();
                 let active_execs = self.active_executions.clone();
                 let ev_tx = self.event_tx.clone();
@@ -653,6 +775,8 @@ impl RequestHandler for AgentRpcHandler {
                             finished_exec.id, e
                         );
                     }
+
+                    trigger_log_retention_purge(&task, s_repo, e_repo.clone());
 
                     let _ = ev_tx.send(IpcEvent::new(
                         "execution.finished",
