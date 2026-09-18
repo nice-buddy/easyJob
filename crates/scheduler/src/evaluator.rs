@@ -169,7 +169,9 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
             let local_after = after.with_timezone(&tz);
             let mut candidate_date = local_after.date_naive();
 
-            for _ in 0..8 {
+            // 上限 14 天。Weekly 只含单日且当日窗口已开始时，最坏需跨 7 天才命中；
+            // 这里留一周余量，避免边界收得过紧导致静默返回 None（触发器会永久停止调度）。
+            for _ in 0..14 {
                 // 窗口已开始（含已结束）即跳过该日：保证每个匹配窗口至多触发一次。
                 // 否则 fire 之后 scheduler 以 now 重新求值，会在同一天剩余窗口内反复重摇。
                 let window_not_started =
@@ -376,6 +378,20 @@ mod tests {
             after = next;
         }
         assert_eq!(fires_in_first_window, 1);
+    }
+
+    #[test]
+    fn fuzzy_weekly_single_day_survives_skipping_current_window() {
+        // 最紧路径：Weekly 只含周日，且 after 正落在周日窗口内 → 跳过当天，
+        // 必须跨整整 7 天才能命中下一个周日（须落在搜索上限之内，否则永久不触发）
+        let kind = fuzzy_kind(FuzzyPeriod::Weekly {
+            days_of_week: vec![chrono::Weekday::Sun],
+        });
+        let after = utc("2026-06-07T09:30:00Z"); // 2026-06-07 是周日
+        assert_eq!(after.weekday(), chrono::Weekday::Sun);
+        let next = evaluate_next_occurrence(&kind, after).unwrap();
+        assert!(next > after);
+        assert_eq!(next.date_naive(), utc("2026-06-14T00:00:00Z").date_naive());
     }
 
     #[test]

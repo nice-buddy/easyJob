@@ -234,6 +234,15 @@ function fuzzyWindowInvalid(tr: Trigger): boolean {
   return false;
 }
 
+// 按周几模式下一日不选会让 matches_weekday 恒为 false，触发器将静默永不触发
+function fuzzyWeeklyDaysInvalid(tr: Trigger): boolean {
+  if (typeof tr.kind === 'object' && 'Fuzzy' in tr.kind) {
+    const p = tr.kind.Fuzzy.period;
+    return typeof p !== 'string' && p.Weekly.days_of_week.length === 0;
+  }
+  return false;
+}
+
 function networkEventsInvalid(tr: Trigger): boolean {
   if (typeof tr.kind === 'object' && 'Network' in tr.kind) {
     return tr.kind.Network.events.length === 0;
@@ -432,6 +441,7 @@ function formatIntervalPreview(sec: number): string {
                 <NCheckbox v-for="d in dayOptions" :key="d.value" :value="d.value" :label="d.label" size="small" />
               </div>
             </NCheckboxGroup>
+            <p v-if="fuzzyWeeklyDaysInvalid(tr)" class="text-red-500 dark:text-red-400">请至少选择一个执行日</p>
           </div>
         </div>
 

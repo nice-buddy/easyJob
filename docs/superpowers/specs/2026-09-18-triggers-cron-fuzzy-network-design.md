@@ -167,7 +167,9 @@ TriggerKind::Fuzzy { period, window_start, window_end, timezone } => {
     let local_after = after.with_timezone(&tz);
     let mut candidate_date = local_after.date_naive();
 
-    for _ in 0..8 {   // 8 天搜索上限，覆盖 Weekly 最坏情况
+    // 上限 14 天。Weekly 只含单日且当日窗口已开始时，最坏需跨 7 天才命中；
+    // 这里留一周余量，避免边界收得过紧导致静默返回 None（触发器会永久停止调度）。
+    for _ in 0..14 {
         // 窗口已开始（含已结束）即跳过该日：保证每个匹配窗口至多触发一次。
         // 否则 fire 之后 scheduler 以 now 重新求值，会在同一天剩余窗口内反复重摇。
         let window_not_started =
