@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Task, TaskId } from '../types/task';
+import type { Task, TaskId, SystemSettings } from '../types/task';
 import type { Execution, ExecutionId } from '../types/execution';
 import type { AgentStatus } from '../types/agent';
 
@@ -52,4 +52,13 @@ export async function getExecutionOutput(id: ExecutionId): Promise<ExecutionOutp
 export async function restartAgent(): Promise<boolean> {
   return await invoke<boolean>('restart_agent');
 }
+
+export async function getSystemSettings(): Promise<SystemSettings> {
+  return await invoke<SystemSettings>('get_system_settings');
+}
+
+export async function saveSystemSettings(settings: SystemSettings): Promise<SystemSettings> {
+  return await invoke<SystemSettings>('save_system_settings', { settings });
+}
+
 

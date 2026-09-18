@@ -69,13 +69,20 @@ export function compareTasks(existingTask: Task, importedTask: Task): TaskDiffRe
     diffFields.add('policy.notification');
   }
 
+  const r1 = ep1.log_retention || { mode: 'SystemDefault' };
+  const r2 = ep2.log_retention || { mode: 'SystemDefault' };
+  if (JSON.stringify(r1) !== JSON.stringify(r2)) {
+    diffFields.add('policy.log_retention');
+  }
+
   const policyDiff =
     diffFields.has('policy.concurrency_policy') ||
     diffFields.has('policy.missed_run_policy') ||
     diffFields.has('policy.timeout_secs') ||
     diffFields.has('policy.retry_max_retries') ||
     diffFields.has('policy.retry_delay_secs') ||
-    diffFields.has('policy.notification');
+    diffFields.has('policy.notification') ||
+    diffFields.has('policy.log_retention');
 
   // 3. Triggers
   const normTriggers1 = existingTask.triggers.map(normalizeTrigger);

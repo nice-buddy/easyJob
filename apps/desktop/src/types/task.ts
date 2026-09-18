@@ -11,12 +11,26 @@ export interface RetryPolicy {
   delay_secs: number;
 }
 
+export type LogRetentionPolicy =
+  | { mode: 'SystemDefault' }
+  | { mode: 'KeepDays'; days: number }
+  | { mode: 'Permanent' };
+
+export type SystemLogRetention =
+  | { mode: 'KeepDays'; days: number }
+  | { mode: 'Permanent' };
+
+export interface SystemSettings {
+  default_log_retention: SystemLogRetention;
+}
+
 export interface ExecutionPolicy {
   concurrency_policy: ConcurrencyPolicy;
   missed_run_policy: MissedRunPolicy;
   retry_policy: RetryPolicy;
   timeout_secs: number | null;
   notification: TaskNotificationPolicy;
+  log_retention: LogRetentionPolicy;
 }
 
 export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
@@ -100,6 +114,7 @@ export function getEmptyTask(): Task {
       },
       timeout_secs: 3600,
       notification: 'None',
+      log_retention: { mode: 'SystemDefault' },
     },
     working_directory: null,
     environment: {},

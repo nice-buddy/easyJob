@@ -113,4 +113,29 @@ describe('taskDiff utility', () => {
     expect(diff.policyDiff).toBe(true);
     expect(diff.diffFields.has('policy.notification')).toBe(true);
   });
+
+  it('should detect differences in policy.log_retention', () => {
+    const taskA = getEmptyTask();
+    taskA.execution_policy.log_retention = { mode: 'SystemDefault' };
+
+    const taskB = getEmptyTask();
+    taskB.execution_policy.log_retention = { mode: 'KeepDays', days: 14 };
+
+    const res1 = compareTasks(taskA, taskB);
+    expect(res1.hasDiff).toBe(true);
+    expect(res1.policyDiff).toBe(true);
+    expect(res1.diffFields.has('policy.log_retention')).toBe(true);
+
+    // 相同 KeepDays 但天数不同
+    const taskC = getEmptyTask();
+    taskC.execution_policy.log_retention = { mode: 'KeepDays', days: 30 };
+    const res2 = compareTasks(taskB, taskC);
+    expect(res2.diffFields.has('policy.log_retention')).toBe(true);
+
+    // 缺失 log_retention 时的 fallback 兼容
+    const legacyTask = getEmptyTask();
+    delete (legacyTask.execution_policy as any).log_retention;
+    const res3 = compareTasks(taskA, legacyTask);
+    expect(res3.diffFields.has('policy.log_retention')).toBe(false);
+  });
 });
