@@ -62,6 +62,18 @@ function handleFileChange(event: Event) {
         return;
       }
 
+      rawTasks.forEach((t) => {
+        if (!t.execution_policy) {
+          t.execution_policy = {} as any;
+        }
+        if (!t.execution_policy.log_retention) {
+          t.execution_policy.log_retention = { mode: 'SystemDefault' };
+        }
+        if (!t.execution_policy.notification) {
+          t.execution_policy.notification = 'None';
+        }
+      });
+
       const existingMap = new Map<string, Task>();
       props.existingTasks.forEach((t) => existingMap.set(t.name, t));
 

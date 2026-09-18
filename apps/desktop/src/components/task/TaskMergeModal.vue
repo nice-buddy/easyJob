@@ -25,6 +25,9 @@ watch(
   ([show]) => {
     if (show && props.importedTask) {
       mergedTask.value = JSON.parse(JSON.stringify(props.importedTask));
+      if (mergedTask.value && !mergedTask.value.execution_policy.log_retention) {
+        mergedTask.value.execution_policy.log_retention = { mode: 'SystemDefault' };
+      }
     }
   },
   { immediate: true }
@@ -57,6 +60,9 @@ function copyExistingSection(section: 'basic' | 'policy' | 'triggers' | 'actions
     dst.working_directory = src.working_directory;
   } else if (section === 'policy') {
     dst.execution_policy = JSON.parse(JSON.stringify(src.execution_policy));
+    if (!dst.execution_policy.log_retention) {
+      dst.execution_policy.log_retention = { mode: 'SystemDefault' };
+    }
   } else if (section === 'triggers') {
     dst.triggers = JSON.parse(JSON.stringify(src.triggers));
   } else if (section === 'actions') {
@@ -79,6 +85,9 @@ function restoreImportedSection(section: 'basic' | 'policy' | 'triggers' | 'acti
     dst.working_directory = src.working_directory;
   } else if (section === 'policy') {
     dst.execution_policy = JSON.parse(JSON.stringify(src.execution_policy));
+    if (!dst.execution_policy.log_retention) {
+      dst.execution_policy.log_retention = { mode: 'SystemDefault' };
+    }
   } else if (section === 'triggers') {
     dst.triggers = JSON.parse(JSON.stringify(src.triggers));
   } else if (section === 'actions') {

@@ -53,7 +53,7 @@ const agentStore = useAgentStore();
           ]"
         >
           <History class="w-4 h-4 shrink-0" />
-          <span>执行记录</span>
+          <span>执行日志</span>
         </button>
 
         <button

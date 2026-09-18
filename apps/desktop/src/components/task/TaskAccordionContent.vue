@@ -14,7 +14,13 @@ import {
 } from 'naive-ui';
 import TriggerEditor from './TriggerEditor.vue';
 import ActionEditor from './ActionEditor.vue';
-import type { Task, ConcurrencyPolicy, MissedRunPolicy, TaskNotificationPolicy } from '../../types/task';
+import type {
+  Task,
+  ConcurrencyPolicy,
+  MissedRunPolicy,
+  TaskNotificationPolicy,
+  LogRetentionPolicy,
+} from '../../types/task';
 import { getTriggerType, getActionType } from '../../types/task';
 
 const props = defineProps<{
@@ -50,6 +56,37 @@ function formatNotification(policy?: string) {
     case 'OnlyFailure': return '仅失败时通知';
     case 'All': return '全部通知 (成功与失败均通知)';
     default: return '不通知';
+  }
+}
+
+const retentionModeOptions = [
+  { label: '跟随系统设置 (默认)', value: 'SystemDefault' },
+  { label: '自定义保留天数', value: 'KeepDays' },
+  { label: '永久保留 (从不清理)', value: 'Permanent' },
+];
+
+function formatLogRetention(policy?: LogRetentionPolicy) {
+  if (!policy || policy.mode === 'SystemDefault') {
+    return '跟随系统设置';
+  }
+  if (policy.mode === 'Permanent') {
+    return '永久保留 (从不清理)';
+  }
+  return `保留 ${policy.days} 天`;
+}
+
+function onRetentionModeChange(mode: 'SystemDefault' | 'KeepDays' | 'Permanent') {
+  if (!props.task) return;
+  if (mode === 'KeepDays') {
+    const prevDays =
+      props.task.execution_policy.log_retention?.mode === 'KeepDays'
+        ? props.task.execution_policy.log_retention.days
+        : 7;
+    props.task.execution_policy.log_retention = { mode: 'KeepDays', days: prevDays || 7 };
+  } else if (mode === 'Permanent') {
+    props.task.execution_policy.log_retention = { mode: 'Permanent' };
+  } else {
+    props.task.execution_policy.log_retention = { mode: 'SystemDefault' };
   }
 }
 
@@ -133,7 +170,7 @@ function removeEnv(idx: number) {
       <NCollapseItem title="执行策略" name="policy">
         <template #header-extra>
           <NTag
-            v-if="!editable && (isDiff('policy.concurrency_policy') || isDiff('policy.missed_run_policy') || isDiff('policy.timeout_secs') || isDiff('policy.retry_max_retries') || isDiff('policy.notification'))"
+            v-if="!editable && (isDiff('policy.concurrency_policy') || isDiff('policy.missed_run_policy') || isDiff('policy.timeout_secs') || isDiff('policy.retry_max_retries') || isDiff('policy.notification') || isDiff('policy.log_retention'))"
             size="tiny"
             type="warning"
           >
@@ -162,6 +199,10 @@ function removeEnv(idx: number) {
             <span class="text-slate-400">结果通知：</span>
             <span class="font-medium">{{ formatNotification(task.execution_policy.notification) }}</span>
           </div>
+          <div :class="['p-2 rounded', isDiff('policy.log_retention') ? 'bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700' : 'bg-slate-50 dark:bg-zinc-800/40']">
+            <span class="text-slate-400">日志保留：</span>
+            <span class="font-medium">{{ formatLogRetention(task.execution_policy.log_retention) }}</span>
+          </div>
         </div>
 
         <div v-else class="space-y-3 pt-1">
@@ -182,6 +223,23 @@ function removeEnv(idx: number) {
             </div>
             <NFormItem label="执行结果通知">
               <NSelect v-model:value="task.execution_policy.notification" :options="notificationOptions" />
+            </NFormItem>
+            <NFormItem label="日志保留策略">
+              <div class="flex items-center gap-2 w-full">
+                <NSelect
+                  :value="task.execution_policy.log_retention?.mode || 'SystemDefault'"
+                  :options="retentionModeOptions"
+                  @update:value="onRetentionModeChange"
+                />
+                <NInputNumber
+                  v-if="task.execution_policy.log_retention?.mode === 'KeepDays'"
+                  v-model:value="(task.execution_policy.log_retention as any).days"
+                  :min="1"
+                  style="width: 120px; flex-shrink: 0;"
+                >
+                  <template #suffix>天</template>
+                </NInputNumber>
+              </div>
             </NFormItem>
           </NForm>
         </div>

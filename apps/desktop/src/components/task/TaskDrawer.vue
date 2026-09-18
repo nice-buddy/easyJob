@@ -63,6 +63,9 @@ watch(
       if (!currentTask.value.execution_policy.notification) {
         currentTask.value.execution_policy.notification = 'None';
       }
+      if (!currentTask.value.execution_policy.log_retention) {
+        currentTask.value.execution_policy.log_retention = { mode: 'SystemDefault' };
+      }
     } else {
       currentTask.value = getEmptyTask();
     }
@@ -79,6 +82,9 @@ watch(
         currentTask.value = JSON.parse(JSON.stringify(props.task));
         if (!currentTask.value.execution_policy.notification) {
           currentTask.value.execution_policy.notification = 'None';
+        }
+        if (!currentTask.value.execution_policy.log_retention) {
+          currentTask.value.execution_policy.log_retention = { mode: 'SystemDefault' };
         }
       } else {
         currentTask.value = getEmptyTask();
@@ -105,6 +111,26 @@ const notificationOptions: { label: string; value: TaskNotificationPolicy }[] = 
   { label: '仅失败时通知 (OnlyFailure)', value: 'OnlyFailure' },
   { label: '全部通知 (成功与失败均通知)', value: 'All' },
 ];
+
+const retentionModeOptions = [
+  { label: '跟随系统设置 (默认)', value: 'SystemDefault' },
+  { label: '自定义保留天数', value: 'KeepDays' },
+  { label: '永久保留 (从不清理)', value: 'Permanent' },
+];
+
+function onRetentionModeChange(mode: 'SystemDefault' | 'KeepDays' | 'Permanent') {
+  if (mode === 'KeepDays') {
+    const prevDays =
+      currentTask.value.execution_policy.log_retention?.mode === 'KeepDays'
+        ? currentTask.value.execution_policy.log_retention.days
+        : 7;
+    currentTask.value.execution_policy.log_retention = { mode: 'KeepDays', days: prevDays || 7 };
+  } else if (mode === 'Permanent') {
+    currentTask.value.execution_policy.log_retention = { mode: 'Permanent' };
+  } else {
+    currentTask.value.execution_policy.log_retention = { mode: 'SystemDefault' };
+  }
+}
 
 async function handleSave() {
   if (!currentTask.value.name.trim()) {
@@ -223,12 +249,32 @@ async function handleSave() {
                   </NFormItem>
                 </div>
 
-                <NFormItem label="执行结果通知">
-                  <NSelect
-                    v-model:value="currentTask.execution_policy.notification"
-                    :options="notificationOptions"
-                  />
-                </NFormItem>
+                <div class="grid grid-cols-2 gap-4">
+                  <NFormItem label="执行结果通知">
+                    <NSelect
+                      v-model:value="currentTask.execution_policy.notification"
+                      :options="notificationOptions"
+                    />
+                  </NFormItem>
+
+                  <NFormItem label="日志保留策略">
+                    <div class="flex items-center gap-2 w-full">
+                      <NSelect
+                        :value="currentTask.execution_policy.log_retention?.mode || 'SystemDefault'"
+                        :options="retentionModeOptions"
+                        @update:value="onRetentionModeChange"
+                      />
+                      <NInputNumber
+                        v-if="currentTask.execution_policy.log_retention?.mode === 'KeepDays'"
+                        v-model:value="(currentTask.execution_policy.log_retention as any).days"
+                        :min="1"
+                        style="width: 120px; flex-shrink: 0;"
+                      >
+                        <template #suffix>天</template>
+                      </NInputNumber>
+                    </div>
+                  </NFormItem>
+                </div>
               </NForm>
             </div>
           </NTabPane>

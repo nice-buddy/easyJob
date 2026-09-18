@@ -180,14 +180,14 @@ const columns: DataTableColumns<Execution> = [
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-xl font-bold">执行记录</h1>
+        <h1 class="text-xl font-bold">执行日志</h1>
         <p class="text-xs text-slate-500 dark:text-zinc-400 mt-1">查看所有自动化任务的历史运行状态与输出流</p>
       </div>
       <NButton size="small" secondary @click="executionStore.loadExecutions()">
         <template #icon>
           <RefreshCw class="w-3.5 h-3.5" />
         </template>
-        刷新记录
+        刷新日志
       </NButton>
     </div>
 
