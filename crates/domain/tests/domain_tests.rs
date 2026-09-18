@@ -4,7 +4,8 @@ use easyjob_domain::{
     action::{Action, ActionKind},
     execution::{Execution, ExecutionStatus},
     policy::{
-        ConcurrencyPolicy, ExecutionPolicy, MissedRunPolicy, RetryPolicy, TaskNotificationPolicy,
+        ConcurrencyPolicy, ExecutionPolicy, LogRetentionPolicy, MissedRunPolicy, RetryPolicy,
+        TaskNotificationPolicy,
     },
     task::Task,
     trigger::{Trigger, TriggerKind},
@@ -50,6 +51,7 @@ fn test_task_creation_and_serialization() {
             },
             timeout_secs: Some(300),
             notification: TaskNotificationPolicy::None,
+            log_retention: LogRetentionPolicy::SystemDefault,
         },
         working_directory: None,
         environment: HashMap::new(),
@@ -100,6 +102,10 @@ fn test_policy_defaults() {
     assert_eq!(default_policy.retry_policy.delay_secs, 0);
     assert_eq!(default_policy.timeout_secs, None);
     assert_eq!(default_policy.notification, TaskNotificationPolicy::None);
+    assert_eq!(
+        default_policy.log_retention,
+        LogRetentionPolicy::SystemDefault
+    );
 }
 
 #[test]
@@ -188,7 +194,9 @@ fn test_task_notification_policy_serialization_and_backward_compatibility() {
         retry_policy: RetryPolicy::default(),
         timeout_secs: Some(60),
         notification: TaskNotificationPolicy::OnlyFailure,
+        log_retention: LogRetentionPolicy::SystemDefault,
     };
+
     let json_str = serde_json::to_string(&policy).unwrap();
     assert!(json_str.contains("\"notification\":\"OnlyFailure\""));
     let deserialized: ExecutionPolicy = serde_json::from_str(&json_str).unwrap();
@@ -209,4 +217,49 @@ fn test_task_notification_policy_serialization_and_backward_compatibility() {
         legacy_deserialized.notification,
         TaskNotificationPolicy::None
     );
+}
+
+#[test]
+fn test_log_retention_policy_defaults_and_serde() {
+    use easyjob_domain::policy::{
+        ExecutionPolicy, LogRetentionPolicy, SystemLogRetention, SystemSettings,
+    };
+
+    // 1. 验证默认策略为 SystemDefault
+    let default_policy = LogRetentionPolicy::default();
+    assert_eq!(default_policy, LogRetentionPolicy::SystemDefault);
+
+    // 2. 验证序列化与反序列化
+    let keep_7 = LogRetentionPolicy::KeepDays(7);
+    let json_keep_7 = serde_json::to_string(&keep_7).unwrap();
+    assert_eq!(json_keep_7, r#"{"mode":"KeepDays","days":7}"#);
+    let parsed_keep_7: LogRetentionPolicy = serde_json::from_str(&json_keep_7).unwrap();
+    assert_eq!(parsed_keep_7, keep_7);
+
+    let perm = LogRetentionPolicy::Permanent;
+    let json_perm = serde_json::to_string(&perm).unwrap();
+    assert_eq!(json_perm, r#"{"mode":"Permanent"}"#);
+    let parsed_perm: LogRetentionPolicy = serde_json::from_str(&json_perm).unwrap();
+    assert_eq!(parsed_perm, perm);
+
+    // 3. 验证旧版 ExecutionPolicy JSON 缺失 log_retention 时的向后兼容性
+    let legacy_json = r#"{
+        "concurrency_policy": "SkipIfRunning",
+        "missed_run_policy": "RunOnce",
+        "retry_policy": { "max_retries": 0, "delay_secs": 0 },
+        "timeout_secs": 3600,
+        "notification": "None"
+    }"#;
+    let ep: ExecutionPolicy = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(ep.log_retention, LogRetentionPolicy::SystemDefault);
+
+    // 4. 验证 SystemSettings 默认值为 KeepDays(7)
+    let sys_default = SystemSettings::default();
+    assert_eq!(
+        sys_default.default_log_retention,
+        SystemLogRetention::KeepDays(7)
+    );
+    let sys_json = serde_json::to_string(&sys_default).unwrap();
+    let parsed_sys: SystemSettings = serde_json::from_str(&sys_json).unwrap();
+    assert_eq!(parsed_sys, sys_default);
 }

@@ -39,4 +39,46 @@ pub struct ExecutionPolicy {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub notification: TaskNotificationPolicy,
+    #[serde(default)]
+    pub log_retention: LogRetentionPolicy,
+}
+
+/// 任务日志保留策略
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "mode", content = "days")]
+pub enum LogRetentionPolicy {
+    /// 跟随系统设置（默认）
+    #[default]
+    #[serde(rename = "SystemDefault")]
+    SystemDefault,
+    /// 自定义保留天数（例如 7 天）
+    #[serde(rename = "KeepDays")]
+    KeepDays(u32),
+    /// 永久保留，从不自动清理
+    #[serde(rename = "Permanent")]
+    Permanent,
+}
+
+/// 系统全局配置模型
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemSettings {
+    /// 全局默认日志保留策略，默认 7 天
+    pub default_log_retention: SystemLogRetention,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "days")]
+pub enum SystemLogRetention {
+    #[serde(rename = "KeepDays")]
+    KeepDays(u32),
+    #[serde(rename = "Permanent")]
+    Permanent,
+}
+
+impl Default for SystemSettings {
+    fn default() -> Self {
+        Self {
+            default_log_retention: SystemLogRetention::KeepDays(7),
+        }
+    }
 }
