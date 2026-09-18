@@ -21,7 +21,7 @@ import type {
   TaskNotificationPolicy,
   LogRetentionPolicy,
 } from '../../types/task';
-import { getTriggerType, getActionType } from '../../types/task';
+import { getTriggerType, getActionType, describeTrigger } from '../../types/task';
 
 const props = defineProps<{
   task: Task | null;
@@ -263,7 +263,7 @@ function removeEnv(idx: number) {
               <span :class="tr.enabled ? 'text-emerald-500' : 'text-slate-400'">{{ tr.enabled ? '启用' : '停用' }}</span>
             </div>
             <div class="text-[11px] text-slate-600 dark:text-zinc-300 font-mono truncate">
-              {{ JSON.stringify(tr.kind) }}
+              {{ describeTrigger(tr.kind) }}
             </div>
           </div>
           <div v-if="task.triggers.length === 0" class="text-slate-400 text-xs py-2 text-center">无触发器</div>
