@@ -137,23 +137,9 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
             expression,
             timezone,
         } => {
-            // 规格仅支持标准 5 字段；croner 会接受 @daily 等别名，这里一并拒绝
-            if expression.split_whitespace().count() != 5 {
-                return None;
-            }
-            // NOTE: croner 的 `FromStr` 实现不校验表达式（恒返回 `Ok`），
-            // 真正的解析/校验发生在 `Cron::parse`，非法表达式在此返回 `Err`。
-            let cron = match croner::Cron::from_str(expression).and_then(|mut cron| cron.parse()) {
-                Ok(c) => c,
-                Err(_) => return None,
-            };
+            let cron = parse_standard_cron(expression)?;
             let tz: Tz = Tz::from_str(timezone).unwrap_or(chrono_tz::UTC);
-            let local_after = after.with_timezone(&tz);
-            // croner 基于 tz-aware DateTime 计算，内部处理 DST；
-            // inclusive=false → 严格晚于 after
-            cron.find_next_occurrence(&local_after, false)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
+            cron_next_occurrence(&cron, &tz, after)
         }
         TriggerKind::Network { .. } => None, // Event-driven (network change), not periodic
         TriggerKind::Fuzzy {
@@ -190,16 +176,102 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
     }
 }
 
-/// 校验 cron 表达式是否为受支持的 5 字段合法表达式（agent 侧 warn 日志用）
+/// 校验 cron 表达式是否为受支持的标准 5 字段合法表达式，**且确实存在下一次触发时刻**
+/// （agent 侧 warn 日志用）。
+///
+/// 像 `0 0 30 2 *` 这类语法合法但永不发生的表达式也必须判为非法，否则触发器会静默地
+/// 永不触发且没有任何日志。
+///
+/// NOTE: 最坏情况约 236ms（`0 0 30 2 *` 这类需扫到 croner 的 YEAR_UPPER_LIMIT=5000）。
+/// 它只在任务加载/保存时按 Cron 触发器调用一次，可接受。
 pub fn validate_cron_expression(expression: &str) -> bool {
-    // 规格仅支持标准 5 字段；croner 会接受 @daily 等别名，这里一并拒绝
-    if expression.split_whitespace().count() != 5 {
+    let Some(cron) = parse_standard_cron(expression) else {
+        return false;
+    };
+    cron_next_occurrence(&cron, &chrono_tz::UTC, Utc::now()).is_some()
+}
+
+const CRON_MONTH_NAMES: [&str; 12] = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+];
+const CRON_WEEKDAY_NAMES: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+
+/// 词法白名单：标准 5 字段 cron 的单个字段只允许数字、`*`、`?`、`,`、`-`、`/`，
+/// 以及月/周字段的三字母别名（JAN..DEC / SUN..SAT）。
+///
+/// 必须拒绝 Quartz 扩展（`L` / `#` / `W`）等非标准记号：croner 的 parse 会接受它们，
+/// 但 `find_next_occurrence` 可能一路搜索到 YEAR_UPPER_LIMIT(5000) 才放弃
+/// （实测 `L * * * *` 单次求值 35 秒），而该调用在调度循环里是同步的，会阻塞全部任务。
+fn is_standard_cron_field(field: &str, is_month: bool, is_weekday: bool) -> bool {
+    let bytes = field.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c.is_ascii_digit() || matches!(c, '*' | '?' | ',' | '-' | '/') {
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            if i + 3 > bytes.len() {
+                return false;
+            }
+            let name = &field[i..i + 3];
+            if !name.bytes().all(|b| b.is_ascii_alphabetic()) {
+                return false;
+            }
+            let upper = name.to_ascii_uppercase();
+            let known = (is_month && CRON_MONTH_NAMES.contains(&upper.as_str()))
+                || (is_weekday && CRON_WEEKDAY_NAMES.contains(&upper.as_str()));
+            if !known {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
         return false;
     }
-    // NOTE: croner 的 `FromStr` 不校验表达式（恒返回 `Ok`），真正的校验发生在 `Cron::parse`
+    true
+}
+
+/// 解析标准 5 字段 cron：字段数 + 字段词法 + croner 解析三重校验。
+/// 字段下标：0=分 1=时 2=日 3=月 4=周。
+fn parse_standard_cron(expression: &str) -> Option<croner::Cron> {
+    let fields: Vec<&str> = expression.split_whitespace().collect();
+    if fields.len() != 5 {
+        return None;
+    }
+    for (idx, field) in fields.iter().enumerate() {
+        if !is_standard_cron_field(field, idx == 3, idx == 4) {
+            return None;
+        }
+    }
+    // NOTE: croner 的 `FromStr` 不校验表达式（恒返回 `Ok`），真正的解析/校验发生在 `Cron::parse`
     croner::Cron::from_str(expression)
         .and_then(|mut cron| cron.parse())
-        .is_ok()
+        .ok()
+}
+
+/// 用 croner 求下一次触发，并保证结果**在绝对时刻上**严格晚于 `after`。
+///
+/// croner 的 `inclusive = false` 只保证「本地时间」严格晚于锚点，不保证「绝对时刻」晚于
+/// `after`：DST 回拨日同一个本地时刻会出现两次，croner 固定返回较早的那次，可能落在
+/// `after` 之前。若直接返回，scheduler 会判定 next_fire_at <= now 并立即重排，形成忙循环
+/// 且反复触发任务。这里以候选的绝对时刻重锚再搜，跨过重复的那个小时。
+fn cron_next_occurrence(
+    cron: &croner::Cron,
+    tz: &Tz,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let mut anchor = after.with_timezone(tz);
+    for _ in 0..3 {
+        let candidate = cron.find_next_occurrence(&anchor, false).ok()?;
+        let candidate_utc = candidate.with_timezone(&Utc);
+        if candidate_utc > after {
+            return Some(candidate_utc);
+        }
+        anchor = candidate_utc.with_timezone(tz);
+    }
+    None
 }
 
 fn pick_random_time_in_window(start: &NaiveTime, end: &NaiveTime) -> NaiveTime {
@@ -292,6 +364,66 @@ mod tests {
         assert!(validate_cron_expression("30 9 * * *"));
         assert!(validate_cron_expression("*/5 * * * *"));
         assert!(validate_cron_expression("0 0 1 1 0"));
+        assert!(validate_cron_expression("0 0 * * MON-FRI"));
+    }
+
+    #[test]
+    fn cron_fall_back_dst_returns_future() {
+        // DST 回拨日同一本地时刻出现两次，croner 固定返回较早那次；必须保证绝对时刻 next > after
+        let cases = [
+            ("America/New_York", "30 1 * * *", "2026-11-01T04:00:00Z", 16),
+            ("Europe/London", "30 1 * * *", "2026-10-25T00:00:00Z", 12),
+        ];
+        for (tz, expr, start, steps) in cases {
+            let kind = TriggerKind::Cron {
+                expression: expr.into(),
+                timezone: tz.into(),
+            };
+            let mut after = utc(start);
+            for _ in 0..steps {
+                let next = evaluate_next_occurrence(&kind, after)
+                    .unwrap_or_else(|| panic!("{tz} {expr} after {after} returned None"));
+                assert!(
+                    next > after,
+                    "{tz} {expr}: next {next} must be strictly after {after}"
+                );
+                after += Duration::minutes(15);
+            }
+        }
+    }
+
+    #[test]
+    fn cron_quartz_extensions_are_rejected_fast() {
+        // `L` 是 Quartz 扩展：croner 会接受并一路扫到 5000 年（实测 35s），
+        // 同步阻塞调度循环；词法白名单必须让它立刻返回 None
+        let kind = TriggerKind::Cron {
+            expression: "L * * * *".into(),
+            timezone: "UTC".into(),
+        };
+        let start = std::time::Instant::now();
+        let result = evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z"));
+        let elapsed = start.elapsed();
+        assert_eq!(result, None);
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "rejection took {elapsed:?}, expected < 1s"
+        );
+    }
+
+    #[test]
+    fn cron_impossible_date_returns_none() {
+        // 语法合法但永不发生（2 月 30 日 / 4 月 31 日）→ 必须返回 None
+        for expression in ["0 0 30 2 *", "0 0 31 4 *"] {
+            let kind = TriggerKind::Cron {
+                expression: expression.into(),
+                timezone: "UTC".into(),
+            };
+            assert_eq!(
+                evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
+                None,
+                "expression {expression:?} should have no occurrence"
+            );
+        }
     }
 
     #[test]
@@ -307,6 +439,9 @@ mod tests {
         assert!(!validate_cron_expression("* * * *")); // 4 字段
         assert!(!validate_cron_expression("0 */5 * * * *")); // 6 字段
         assert!(!validate_cron_expression("@daily")); // 别名，规格不支持
+        assert!(!validate_cron_expression("L * * * *")); // Quartz 扩展
+        assert!(!validate_cron_expression("0 0 30 2 *")); // 语法合法但永不发生
+        assert!(!validate_cron_expression("1/2/3 * * * *")); // croner 报 stepped range 错误
     }
 
     #[test]
