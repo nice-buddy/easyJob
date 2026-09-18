@@ -168,21 +168,15 @@ TriggerKind::Fuzzy { period, window_start, window_end, timezone } => {
     let mut candidate_date = local_after.date_naive();
 
     for _ in 0..8 {   // 8 天搜索上限，覆盖 Weekly 最坏情况
-        if period.matches_weekday(candidate_date.weekday()) {
+        // 窗口已开始（含已结束）即跳过该日：保证每个匹配窗口至多触发一次。
+        // 否则 fire 之后 scheduler 以 now 重新求值，会在同一天剩余窗口内反复重摇。
+        let window_not_started =
+            candidate_date > local_after.date_naive() || *window_start > local_after.time();
+        if period.matches_weekday(candidate_date.weekday()) && window_not_started {
             // 该日窗口内随机选点
             let picked = pick_random_time_in_window(window_start, window_end);
             if let Some(utc) = resolve_candidate(&tz, candidate_date, picked, after) {
                 return Some(utc);
-            }
-            // 今天：首次随机点已过期（窗口接近尾声），在剩余窗口内重摇
-            if candidate_date == local_after.date_naive() {
-                let after_time = local_after.time();
-                if after_time < *window_end {
-                    let late_pick = pick_random_time_in_window(&after_time, window_end);
-                    if let Some(utc) = resolve_candidate(&tz, candidate_date, late_pick, after) {
-                        return Some(utc);
-                    }
-                }
             }
         }
         candidate_date = candidate_date.succ_opt()?;
@@ -213,10 +207,10 @@ impl FuzzyPeriod {
 
 语义细则：
 
-- 每个周期窗口内**只触发一次**；fire 后 scheduler 重新调用
-  `evaluate_next_occurrence(now)`，得到下一匹配周期窗口内的新随机点。
-- 任务注册（`AddTask`）当天若为匹配日且窗口未过完：以
-  `max(now_local, window_start)` 为下界随机，保证今天仍可触发。
+- 每个周期窗口内**至多触发一次**：判定以"窗口是否已开始"为准——若 `after`
+  已不早于该日 `window_start`，则整日跳过、顺延到下一个匹配日。因此 fire 后
+  scheduler 以 `now` 重排时必然落到下一匹配窗口；agent 在窗口进行中启动、或任务
+  在窗口进行中才创建时，该窗口不再触发，首次触发落在下一个匹配日。
 - 每次调用独立随机：clock-jump 队列重建、agent 重启都会重新摇号——这是
   fuzzy 语义的合理行为，不做"已选时间点"持久化。
 - `window_end <= window_start` 视为非法配置，返回 `None`（前端校验兜底）。

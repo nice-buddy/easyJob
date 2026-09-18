@@ -170,20 +170,14 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
             let mut candidate_date = local_after.date_naive();
 
             for _ in 0..8 {
-                if period.matches_weekday(candidate_date.weekday()) {
+                // 窗口已开始（含已结束）即跳过该日：保证每个匹配窗口至多触发一次。
+                // 否则 fire 之后 scheduler 以 now 重新求值，会在同一天剩余窗口内反复重摇。
+                let window_not_started =
+                    candidate_date > local_after.date_naive() || *window_start > local_after.time();
+                if period.matches_weekday(candidate_date.weekday()) && window_not_started {
                     let picked = pick_random_time_in_window(window_start, window_end);
                     if let Some(utc_dt) = resolve_candidate(&tz, candidate_date, picked, after) {
                         return Some(utc_dt);
-                    }
-                    // 今天：随机点已过期但窗口未结束 → 在严格晚于 after 的剩余窗口内重摇一次
-                    let late_start = local_after.time() + chrono::Duration::seconds(1);
-                    if candidate_date == local_after.date_naive() && late_start < *window_end {
-                        let late_pick = pick_random_time_in_window(&late_start, window_end);
-                        if let Some(utc_dt) =
-                            resolve_candidate(&tz, candidate_date, late_pick, after)
-                        {
-                            return Some(utc_dt);
-                        }
                     }
                 }
                 candidate_date = candidate_date.succ_opt()?;
@@ -339,14 +333,49 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_mid_window_picks_in_remaining_window() {
-        // after 在窗口中段：结果必须仍在今天窗口内且 > after
+    fn fuzzy_mid_window_skips_to_next_matching_day() {
+        // after 已落在窗口内 → 该窗口不再触发（每窗口至多一次），顺延到下一个匹配日
         let kind = fuzzy_kind(FuzzyPeriod::Daily);
         let after = utc("2026-06-01T09:30:00Z");
         let next = evaluate_next_occurrence(&kind, after).unwrap();
         assert!(next > after);
-        assert!(next < utc("2026-06-01T10:00:00Z"));
-        assert_eq!(next.date_naive(), after.date_naive());
+        assert_eq!(next.date_naive(), utc("2026-06-02T00:00:00Z").date_naive());
+        let t = next.time();
+        assert!(
+            t >= NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+                && t < NaiveTime::from_hms_opt(10, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn fuzzy_window_start_boundary_is_skipped() {
+        // after 恰好等于 window_start：窗口已开始 → 跳到下一个匹配日
+        let kind = fuzzy_kind(FuzzyPeriod::Daily);
+        let after = utc("2026-06-01T09:00:00Z");
+        assert_eq!(
+            evaluate_next_occurrence(&kind, after).unwrap().date_naive(),
+            utc("2026-06-02T00:00:00Z").date_naive()
+        );
+    }
+
+    #[test]
+    fn fuzzy_fires_at_most_once_per_window() {
+        // 模拟 scheduler 的 fire → 以 now 重排：首个窗口内只能触发一次
+        let kind = fuzzy_kind(FuzzyPeriod::Daily);
+        let window_start = utc("2026-06-01T09:00:00Z");
+        let window_end = utc("2026-06-01T10:00:00Z");
+
+        let mut after = utc("2026-06-01T08:30:00Z");
+        let mut fires_in_first_window = 0;
+        for _ in 0..20 {
+            let next = evaluate_next_occurrence(&kind, after).unwrap();
+            assert!(next > after, "next occurrence must be strictly after");
+            if next >= window_start && next < window_end {
+                fires_in_first_window += 1;
+            }
+            after = next;
+        }
+        assert_eq!(fires_in_first_window, 1);
     }
 
     #[test]
