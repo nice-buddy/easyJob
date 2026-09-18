@@ -212,10 +212,11 @@ fn is_standard_cron_field(field: &str, is_month: bool, is_weekday: bool) -> bool
             continue;
         }
         if c.is_ascii_alphabetic() {
-            if i + 3 > bytes.len() {
+            // 用 get 而非切片：畸形输入（如 `a😀`）会让 `i + 3` 落在多字节字符中间，
+            // 直接切片会 panic，而本函数位于调度求值路径上。
+            let Some(name) = field.get(i..i + 3) else {
                 return false;
-            }
-            let name = &field[i..i + 3];
+            };
             if !name.bytes().all(|b| b.is_ascii_alphabetic()) {
                 return false;
             }
@@ -258,8 +259,9 @@ fn parse_standard_cron(expression: &str) -> Option<croner::Cron> {
 /// 留余量。上限若过小（例如 3），像 `*/15 1 * * *` 这种在重复小时里有 4 个匹配点的表达式会
 /// 耗尽重试并返回 `None`，而 scheduler 对 `None` 不做重排，触发器会**永久停止调度**。
 ///
-/// 放大上限不会带来额外开销：表达式永不匹配时第一次 `find_next_occurrence` 就返回 `Err`
-/// 并由 `?` 短路；只有当候选确实落在 `after` 之前时才会继续下一轮，而每轮都是微秒级纯计算。
+/// 放大上限不会带来额外开销：表达式永不匹配时第一次 `find_next_occurrence` 就返回
+/// `Err(TimeSearchLimitExceeded)` 并直接短路返回 `None`；只有 DST 回拨/跳变这类异常路径
+/// 才会继续下一轮，而每轮都是微秒级纯计算。
 const CRON_DST_RETRY_LIMIT: usize = 240;
 
 /// 用 croner 求下一次触发，并保证结果**在绝对时刻上**严格晚于 `after`。
@@ -268,6 +270,10 @@ const CRON_DST_RETRY_LIMIT: usize = 240;
 /// `after`：DST 回拨日同一个本地时刻会出现两次，croner 固定返回较早的那次，可能落在
 /// `after` 之前。若直接返回，scheduler 会判定 next_fire_at <= now 并立即重排，形成忙循环
 /// 且反复触发任务。这里以候选的绝对时刻重锚再搜，逐次跨过重复区间内的匹配点。
+///
+/// 另外，DST 春季跳变（gap）下锚点可能落在不存在的本地时刻，croner 会返回
+/// `CronError::InvalidTime`；此时把锚点推进一小时越过 gap 再试。否则该触发器的下一次会算成
+/// `None`，而 scheduler 对 `None` 不做重排，触发器会**永久停止调度**。
 fn cron_next_occurrence(
     cron: &croner::Cron,
     tz: &Tz,
@@ -275,12 +281,22 @@ fn cron_next_occurrence(
 ) -> Option<DateTime<Utc>> {
     let mut anchor = after.with_timezone(tz);
     for _ in 0..CRON_DST_RETRY_LIMIT {
-        let candidate = cron.find_next_occurrence(&anchor, false).ok()?;
-        let candidate_utc = candidate.with_timezone(&Utc);
-        if candidate_utc > after {
-            return Some(candidate_utc);
+        match cron.find_next_occurrence(&anchor, false) {
+            Ok(candidate) => {
+                let candidate_utc = candidate.with_timezone(&Utc);
+                if candidate_utc > after {
+                    return Some(candidate_utc);
+                }
+                // DST 回拨：候选落在 after 之前，以候选的绝对时刻重锚
+                anchor = candidate_utc.with_timezone(tz);
+            }
+            // DST 春季跳变（gap，最长 2 小时）：锚点落在不存在的本地时刻，越过再试
+            Err(croner::errors::CronError::InvalidTime) => {
+                anchor = (anchor.with_timezone(&Utc) + Duration::hours(1)).with_timezone(tz);
+            }
+            // 其余错误（含永不发生表达式触发的 TimeSearchLimitExceeded）无解
+            Err(_) => return None,
         }
-        anchor = candidate_utc.with_timezone(tz);
     }
     None
 }
@@ -463,6 +479,55 @@ mod tests {
                 evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
                 None,
                 "expression {expression:?} should have no occurrence"
+            );
+        }
+    }
+
+    #[test]
+    fn cron_malformed_non_ascii_input_does_not_panic() {
+        // 词法白名单按字节扫描：`a😀` 的 `i + 3` 落在多字节字符中间，
+        // 若用切片会 panic，而本路径位于调度求值/任务加载的告警路径上
+        for expression in [
+            "a😀 * * * *",
+            "a€ * * * *",
+            "😀 * * * *",
+            "MON😀 * * * *",
+            "0 0 * * 😀",
+        ] {
+            let kind = TriggerKind::Cron {
+                expression: expression.into(),
+                timezone: "UTC".into(),
+            };
+            assert_eq!(
+                evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
+                None,
+                "expression {expression:?} should be rejected without panicking"
+            );
+            assert!(
+                !validate_cron_expression(expression),
+                "expression {expression:?} should be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn cron_spring_forward_gap_returns_future() {
+        // Antarctica/Troll 春季跳变幅度为 2 小时（本地 01:00-03:00 不存在）：
+        // croner 会返回 Err(InvalidTime)，必须越过 gap 继续找，否则返回 None 会让
+        // scheduler 不再重排、触发器永久停摆
+        let kind = TriggerKind::Cron {
+            expression: "30 1 * * *".into(),
+            timezone: "Antarctica/Troll".into(),
+        };
+        let start = utc("2026-03-28T01:30:00Z");
+        for i in 0..48 {
+            let after = start + Duration::minutes(30 * i);
+            let next = evaluate_next_occurrence(&kind, after).unwrap_or_else(|| {
+                panic!("Antarctica/Troll 30 1 * * * after {after} returned None")
+            });
+            assert!(
+                next > after,
+                "Antarctica/Troll: next {next} must be strictly after {after}"
             );
         }
     }
