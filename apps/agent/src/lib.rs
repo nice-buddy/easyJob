@@ -1,4 +1,5 @@
 pub mod lock;
+pub mod network;
 pub mod service;
 
 pub use lock::{LockOutcome, SingleInstanceLock};
