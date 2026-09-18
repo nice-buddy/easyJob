@@ -8,7 +8,9 @@ use agent_manager::AgentManager;
 use commands::*;
 use events::spawn_event_relay;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
+use tauri::Manager;
 
 /// Check if the CLI arguments contain `--minimized` (used by autostart silent launch).
 pub fn is_minimized_launch(args: &[String]) -> bool {
@@ -49,6 +51,7 @@ pub fn run() {
     let builder = tauri::Builder::default();
     let last_notification_time = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
     let last_notification_for_events = last_notification_time.clone();
+    #[cfg(target_os = "macos")]
     let last_notification_for_reopen = last_notification_time.clone();
 
     builder
@@ -105,7 +108,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building easyJob desktop")
-        .run(move |app_handle, event| match event {
+        .run(move |app_handle, event| {
+            #[cfg(not(target_os = "macos"))]
+            let _ = &app_handle;
+            match event {
             tauri::RunEvent::ExitRequested { .. } => {
                 tracing::info!("Application exit requested, shutting down agent daemon...");
                 let manager = manager_for_exit.clone();
@@ -114,6 +120,7 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 });
             }
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 set_dock_visible(true);
                 if let Some(window) = app_handle.get_webview_window("main") {
@@ -144,5 +151,6 @@ pub fn run() {
                 }
             }
             _ => {}
+            }
         });
 }
