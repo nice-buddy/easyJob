@@ -36,6 +36,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
+          version: 12.4.2
           run_install: false
 
       - name: Setup Node
@@ -48,12 +49,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target && matrix.target || '' }}
+          targets: ${{ matrix.target }}
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: |
+            . -> target
             apps/desktop/src-tauri -> target
 
       - name: Install frontend dependencies
