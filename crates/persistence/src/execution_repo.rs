@@ -19,6 +19,11 @@ pub trait ExecutionRepository: Send + Sync {
     async fn find_recent_runs(&self, limit: u32) -> Result<Vec<Execution>>;
     async fn append_output(&self, run_id: &ExecutionId, stream: &str, content: &str) -> Result<()>;
     async fn get_outputs(&self, run_id: &ExecutionId) -> Result<Vec<ExecutionOutputRecord>>;
+    async fn purge_expired_runs(
+        &self,
+        task_id: &TaskId,
+        before: chrono::DateTime<Utc>,
+    ) -> Result<u64>;
 }
 
 pub struct SqliteExecutionRepository {
@@ -135,6 +140,26 @@ impl ExecutionRepository for SqliteExecutionRepository {
             });
         }
         Ok(list)
+    }
+
+    async fn purge_expired_runs(
+        &self,
+        task_id: &TaskId,
+        before: chrono::DateTime<Utc>,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM task_runs
+             WHERE task_id = ?
+               AND started_at < ?
+               AND status != '\"Running\"'",
+        )
+        .bind(task_id.to_string())
+        .bind(before.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(result.rows_affected())
     }
 }
 

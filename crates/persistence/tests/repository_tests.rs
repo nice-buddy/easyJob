@@ -5,10 +5,12 @@ use easyjob_domain::execution::{Execution, ExecutionStatus};
 use easyjob_domain::policy::ExecutionPolicy;
 use easyjob_domain::task::Task;
 use easyjob_domain::trigger::{Trigger, TriggerKind};
+use easyjob_domain::{SystemLogRetention, SystemSettings};
 use easyjob_persistence::db::init_pool;
 use easyjob_persistence::execution_repo::{ExecutionRepository, SqliteExecutionRepository};
 use easyjob_persistence::recovery::recover_dangling_executions;
 use easyjob_persistence::task_repo::{SqliteTaskRepository, TaskRepository};
+use easyjob_persistence::{SettingsRepository, SqliteSettingsRepository};
 use sqlx::Row;
 use std::collections::HashMap;
 
@@ -639,4 +641,134 @@ async fn test_find_by_id_propagates_deserialization_errors() {
 
     let res = task_repo.find_by_id(&task_id).await;
     assert!(res.is_err());
+}
+
+async fn setup_test_db() -> easyjob_persistence::DbPool {
+    init_pool("sqlite::memory:?cache=shared").await.unwrap()
+}
+
+fn make_dummy_task(name: &str) -> Task {
+    let task_id = TaskId::new();
+    Task {
+        id: task_id,
+        name: name.to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn test_settings_repo_crud() {
+    let pool = setup_test_db().await;
+    let repo = SqliteSettingsRepository::new(pool);
+
+    // 1. 初始获取返回默认值 (KeepDays(7))
+    let settings = repo.get_system_settings().await.unwrap();
+    assert_eq!(
+        settings.default_log_retention,
+        SystemLogRetention::KeepDays(7)
+    );
+
+    // 2. 更新设置为 30 天
+    let updated = SystemSettings {
+        default_log_retention: SystemLogRetention::KeepDays(30),
+    };
+    repo.save_system_settings(&updated).await.unwrap();
+
+    let fetched = repo.get_system_settings().await.unwrap();
+    assert_eq!(
+        fetched.default_log_retention,
+        SystemLogRetention::KeepDays(30)
+    );
+
+    // 3. 更新为永久保留
+    let perm = SystemSettings {
+        default_log_retention: SystemLogRetention::Permanent,
+    };
+    repo.save_system_settings(&perm).await.unwrap();
+    let fetched_perm = repo.get_system_settings().await.unwrap();
+    assert_eq!(
+        fetched_perm.default_log_retention,
+        SystemLogRetention::Permanent
+    );
+}
+
+#[tokio::test]
+async fn test_purge_expired_runs_and_cascade_outputs() {
+    let pool = setup_test_db().await;
+    let exec_repo = SqliteExecutionRepository::new(pool.clone());
+    let task_repo = SqliteTaskRepository::new(pool.clone());
+
+    // 准备一个任务
+    let task = make_dummy_task("purge-test-task");
+    task_repo.save(&task).await.unwrap();
+
+    let now = chrono::Utc::now();
+    let ten_days_ago = now - chrono::Duration::days(10);
+    let two_days_ago = now - chrono::Duration::days(2);
+
+    // 1. 创建 10 天前的已完成运行及输出
+    let mut old_run = Execution::new(task.id, None, Some(ten_days_ago));
+    old_run.status = ExecutionStatus::Succeeded;
+    old_run.started_at = ten_days_ago;
+    old_run.finished_at = Some(ten_days_ago + chrono::Duration::seconds(5));
+    exec_repo.create_run(&old_run).await.unwrap();
+    exec_repo
+        .append_output(&old_run.id, "stdout", "old log content")
+        .await
+        .unwrap();
+
+    // 2. 创建 2 天前的已完成运行及输出
+    let mut recent_run = Execution::new(task.id, None, Some(two_days_ago));
+    recent_run.status = ExecutionStatus::Succeeded;
+    recent_run.started_at = two_days_ago;
+    recent_run.finished_at = Some(two_days_ago + chrono::Duration::seconds(5));
+    exec_repo.create_run(&recent_run).await.unwrap();
+    exec_repo
+        .append_output(&recent_run.id, "stdout", "recent log content")
+        .await
+        .unwrap();
+
+    // 3. 创建 10 天前但仍在 Running 状态的运行
+    let mut running_old_run = Execution::new(task.id, None, Some(ten_days_ago));
+    running_old_run.status = ExecutionStatus::Running;
+    running_old_run.started_at = ten_days_ago;
+    exec_repo.create_run(&running_old_run).await.unwrap();
+
+    // 4. 以 7 天前为 cutoff 执行清理
+    let cutoff = now - chrono::Duration::days(7);
+    let deleted_count = exec_repo
+        .purge_expired_runs(&task.id, cutoff)
+        .await
+        .unwrap();
+    assert_eq!(deleted_count, 1, "只应清理 1 条 10 天前已结束的运行");
+
+    // 5. 验证已删除旧运行与输出
+    assert!(exec_repo
+        .find_run_by_id(&old_run.id)
+        .await
+        .unwrap()
+        .is_none());
+    let old_outputs = exec_repo.get_outputs(&old_run.id).await.unwrap();
+    assert!(old_outputs.is_empty(), "外键级联删除输出记录");
+
+    // 6. 验证近期的运行与仍在运行中的记录完好
+    assert!(exec_repo
+        .find_run_by_id(&recent_run.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(exec_repo
+        .find_run_by_id(&running_old_run.id)
+        .await
+        .unwrap()
+        .is_some());
 }
