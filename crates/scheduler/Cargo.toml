@@ -8,6 +8,8 @@ easyjob-common = { path = "../common" }
 easyjob-domain = { path = "../domain" }
 chrono.workspace = true
 chrono-tz.workspace = true
+croner.workspace = true
+rand.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

@@ -133,6 +133,98 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
             }
             None
         }
+        TriggerKind::Cron {
+            expression,
+            timezone,
+        } => {
+            // 规格明确仅支持标准 5 字段（分 时 日 月 周）
+            if expression.split_whitespace().count() != 5 {
+                return None;
+            }
+            // NOTE: croner 的 `FromStr` 实现不校验表达式（恒返回 `Ok`），
+            // 真正的解析/校验发生在 `Cron::parse`，非法表达式在此返回 `Err`。
+            let cron = match croner::Cron::from_str(expression).and_then(|mut cron| cron.parse()) {
+                Ok(c) => c,
+                Err(_) => return None,
+            };
+            let tz: Tz = Tz::from_str(timezone).unwrap_or(chrono_tz::UTC);
+            let local_after = after.with_timezone(&tz);
+            // croner 基于 tz-aware DateTime 计算，内部处理 DST；
+            // inclusive=false → 严格晚于 after
+            cron.find_next_occurrence(&local_after, false)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        }
+        TriggerKind::Network { .. } => None, // Event-driven (network change), not periodic
+        // NOTE: temporary placeholder; real implementation lands in Task 3
+        TriggerKind::Fuzzy { .. } => None,
         TriggerKind::AgentStarted => None, // Handled upon agent startup event, not periodic
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use easyjob_domain::trigger::NetworkEventKind;
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn cron_daily_0930_shanghai() {
+        // after = 2026-06-01 08:00 +08 → 下一次 09:30 +08 = 01:30Z
+        let kind = TriggerKind::Cron {
+            expression: "30 9 * * *".into(),
+            timezone: "Asia/Shanghai".into(),
+        };
+        let next = evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")).unwrap();
+        assert_eq!(next, utc("2026-06-01T01:30:00Z"));
+    }
+
+    #[test]
+    fn cron_every_5_min_respects_after() {
+        let kind = TriggerKind::Cron {
+            expression: "*/5 * * * *".into(),
+            timezone: "UTC".into(),
+        };
+        let next = evaluate_next_occurrence(&kind, utc("2026-06-01T10:02:00Z")).unwrap();
+        assert_eq!(next, utc("2026-06-01T10:05:00Z"));
+    }
+
+    #[test]
+    fn cron_invalid_expression_returns_none() {
+        let kind = TriggerKind::Cron {
+            expression: "not a cron".into(),
+            timezone: "UTC".into(),
+        };
+        assert_eq!(
+            evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
+            None
+        );
+    }
+
+    #[test]
+    fn cron_rejects_non_5_field_expressions() {
+        let kind = TriggerKind::Cron {
+            expression: "0 */5 * * * *".into(), // 6 字段（含秒），规格明确不支持
+            timezone: "UTC".into(),
+        };
+        assert_eq!(
+            evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
+            None
+        );
+    }
+
+    #[test]
+    fn network_kind_is_event_driven_returns_none() {
+        let kind = TriggerKind::Network {
+            events: vec![NetworkEventKind::Connect],
+            network_name: None,
+        };
+        assert_eq!(
+            evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
+            None
+        );
     }
 }

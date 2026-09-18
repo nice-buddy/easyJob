@@ -721,6 +721,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "croner"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c344b0690c1ad1c7176fe18eb173e0c927008fdaaa256e40dfd43ddd149c0843"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1250,8 +1259,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "croner",
  "easyjob-common",
  "easyjob-domain",
+ "rand 0.8.8",
  "tokio",
  "tokio-util",
  "tracing",
