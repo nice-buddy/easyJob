@@ -234,6 +234,13 @@ function fuzzyWindowInvalid(tr: Trigger): boolean {
   return false;
 }
 
+function networkEventsInvalid(tr: Trigger): boolean {
+  if (typeof tr.kind === 'object' && 'Network' in tr.kind) {
+    return tr.kind.Network.events.length === 0;
+  }
+  return false;
+}
+
 function formatIntervalPreview(sec: number): string {
   if (sec >= 86400 && sec % 86400 === 0) {
     return `${sec / 86400} 天`;
@@ -471,6 +478,7 @@ function formatIntervalPreview(sec: number): string {
               <NCheckbox v-for="e in networkEventOptions" :key="e.value" :value="e.value" :label="e.label" size="small" />
             </div>
           </NCheckboxGroup>
+          <p v-if="networkEventsInvalid(tr)" class="text-red-500 dark:text-red-400">请至少选择一个触发事件</p>
         </div>
 
         <div>
