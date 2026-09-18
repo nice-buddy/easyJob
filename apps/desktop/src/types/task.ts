@@ -114,6 +114,15 @@ const CRON_FIELD_RANGES: [number, number][] = [
   [0, 7],  // day of week (7 = Sunday)
 ];
 
+// croner 只识别月与周几字段的三字母别名；其余字段出现字母一律非法
+const CRON_MONTH_NAMES: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+const CRON_WEEKDAY_NAMES: Record<string, number> = {
+  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+};
+
 const CRON_TOKEN_RE =
   /^(\*|\?|\d+|[A-Za-z]{3})(?:-(\d+|[A-Za-z]{3}))?(?:\/(\d+))?$/;
 
@@ -129,22 +138,34 @@ export function validateCronExpression(expr: string): boolean {
         const [base, stepStr] = token.split('/');
         if (!/^\d+$/.test(stepStr) || parseInt(stepStr, 10) < 1) return false;
         if (base === '*' || base === '?') return true;
-        return checkCronToken(base, lo, hi);
+        return checkCronToken(base, lo, hi, i);
       }
-      return checkCronToken(token, lo, hi);
+      return checkCronToken(token, lo, hi, i);
     });
   });
 }
 
-function checkCronToken(token: string, lo: number, hi: number): boolean {
+function checkCronToken(token: string, lo: number, hi: number, fieldIdx: number): boolean {
   if (!CRON_TOKEN_RE.test(token)) return false;
-  if (/^[A-Za-z]{3}(-[A-Za-z]{3})?$/.test(token)) return true; // JAN/DEC/MON/SUN 名称及 MON-FRI 别名范围
-  const nums = token.match(/\d+/g);
-  if (!nums) return false;
-  return nums.every((n) => {
-    const v = parseInt(n, 10);
-    return v >= lo && v <= hi;
-  });
+  const [start, end] = token.split('-');
+  const startVal = cronFieldValue(start, fieldIdx, false);
+  if (startVal === null || startVal < lo || startVal > hi) return false;
+  if (end === undefined) return true;
+  const endVal = cronFieldValue(end, fieldIdx, true);
+  if (endVal === null || endVal < lo || endVal > hi) return false;
+  // croner 对反向区间报错（如 5-1、FRI-MON），这里必须一致
+  return startVal <= endVal;
+}
+
+// 名称别名或数字 → 数值；未知别名返回 null
+function cronFieldValue(part: string, fieldIdx: number, isRangeEnd: boolean): number | null {
+  if (/^\d+$/.test(part)) return parseInt(part, 10);
+  const name = part.toLowerCase();
+  const table = fieldIdx === 3 ? CRON_MONTH_NAMES : fieldIdx === 4 ? CRON_WEEKDAY_NAMES : undefined;
+  const value = table?.[name];
+  if (value === undefined) return null;
+  // croner 会把范围末端的 sun 归一化为 7（替换表 "-sun" → "-7"），使 FRI-SUN 合法
+  return fieldIdx === 4 && isRangeEnd && name === 'sun' ? 7 : value;
 }
 
 export function describeTrigger(kind: TriggerKind): string {
