@@ -137,7 +137,7 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
             expression,
             timezone,
         } => {
-            // 规格明确仅支持标准 5 字段（分 时 日 月 周）
+            // 规格仅支持标准 5 字段；croner 会接受 @daily 等别名，这里一并拒绝
             if expression.split_whitespace().count() != 5 {
                 return None;
             }
@@ -194,14 +194,29 @@ mod tests {
 
     #[test]
     fn cron_invalid_expression_returns_none() {
+        // 5 字段但内容非法：必须穿过 5 字段前置检查，走到 croner 的 parse 错误路径
+        for expression in ["99 * * * *", "*/0 * * * *"] {
+            let kind = TriggerKind::Cron {
+                expression: expression.into(),
+                timezone: "UTC".into(),
+            };
+            assert_eq!(
+                evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
+                None,
+                "expression {expression:?} should be rejected by croner"
+            );
+        }
+    }
+
+    #[test]
+    fn cron_strictly_after_boundary() {
+        // after 恰好落在匹配点（10:05）→ 必须严格晚于 after，取 10:10
         let kind = TriggerKind::Cron {
-            expression: "not a cron".into(),
+            expression: "*/5 * * * *".into(),
             timezone: "UTC".into(),
         };
-        assert_eq!(
-            evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
-            None
-        );
+        let next = evaluate_next_occurrence(&kind, utc("2026-06-01T10:05:00Z")).unwrap();
+        assert_eq!(next, utc("2026-06-01T10:10:00Z"));
     }
 
     #[test]
