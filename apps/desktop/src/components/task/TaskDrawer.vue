@@ -150,6 +150,12 @@ async function handleSave() {
     currentTask.value.execution_policy.timeout_secs = isNaN(t) || t <= 0 ? null : t;
   }
 
+  if (currentTask.value.execution_policy.log_retention?.mode === 'KeepDays') {
+    const d = Number((currentTask.value.execution_policy.log_retention as any).days);
+    (currentTask.value.execution_policy.log_retention as any).days =
+      isNaN(d) || d < 1 ? 7 : Math.floor(d);
+  }
+
   isSaving.value = true;
   try {
     await taskStore.saveTask(currentTask.value);

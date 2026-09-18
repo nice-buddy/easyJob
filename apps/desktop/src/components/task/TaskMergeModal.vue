@@ -98,6 +98,22 @@ function restoreImportedSection(section: 'basic' | 'policy' | 'triggers' | 'acti
   message.success('已还原导入配置到最终结果');
 }
 
+function handleAdoptAllExisting() {
+  if (!props.existingTask) return;
+  mergedTask.value = JSON.parse(JSON.stringify(props.existingTask));
+  if (mergedTask.value && !mergedTask.value.execution_policy.log_retention) {
+    mergedTask.value.execution_policy.log_retention = { mode: 'SystemDefault' };
+  }
+}
+
+function handleRestoreAllImported() {
+  if (!props.importedTask) return;
+  mergedTask.value = JSON.parse(JSON.stringify(props.importedTask));
+  if (mergedTask.value && !mergedTask.value.execution_policy.log_retention) {
+    mergedTask.value.execution_policy.log_retention = { mode: 'SystemDefault' };
+  }
+}
+
 function handleConfirmMerge() {
   if (!mergedTask.value) return;
   emit('merged', mergedTask.value);
@@ -160,10 +176,10 @@ function handleConfirmMerge() {
             <NTag size="tiny" type="success">可编辑</NTag>
           </div>
           <div class="flex items-center gap-1">
-            <NButton size="tiny" secondary @click="mergedTask = JSON.parse(JSON.stringify(existingTask!))">
+            <NButton size="tiny" secondary @click="handleAdoptAllExisting">
               全部采用已有
             </NButton>
-            <NButton size="tiny" secondary @click="mergedTask = JSON.parse(JSON.stringify(importedTask!))">
+            <NButton size="tiny" secondary @click="handleRestoreAllImported">
               全部还原导入
             </NButton>
           </div>

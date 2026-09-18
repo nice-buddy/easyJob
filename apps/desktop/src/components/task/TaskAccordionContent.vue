@@ -72,7 +72,7 @@ function formatLogRetention(policy?: LogRetentionPolicy) {
   if (policy.mode === 'Permanent') {
     return '永久保留 (从不清理)';
   }
-  return `保留 ${policy.days} 天`;
+  return `保留 ${policy.days ?? 7} 天`;
 }
 
 function onRetentionModeChange(mode: 'SystemDefault' | 'KeepDays' | 'Permanent') {
