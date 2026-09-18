@@ -175,11 +175,10 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
                     if let Some(utc_dt) = resolve_candidate(&tz, candidate_date, picked, after) {
                         return Some(utc_dt);
                     }
-                    // 今天：随机点已过期但窗口未结束 → 在剩余窗口内重摇一次
-                    if candidate_date == local_after.date_naive()
-                        && local_after.time() < *window_end
-                    {
-                        let late_pick = pick_random_time_in_window(&local_after.time(), window_end);
+                    // 今天：随机点已过期但窗口未结束 → 在严格晚于 after 的剩余窗口内重摇一次
+                    let late_start = local_after.time() + chrono::Duration::seconds(1);
+                    if candidate_date == local_after.date_naive() && late_start < *window_end {
+                        let late_pick = pick_random_time_in_window(&late_start, window_end);
                         if let Some(utc_dt) =
                             resolve_candidate(&tz, candidate_date, late_pick, after)
                         {
