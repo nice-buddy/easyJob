@@ -76,6 +76,30 @@ describe('validateCronExpression', () => {
     expect(validateCronExpression('0 0 * * SUN-MON')).toBe(true);
     expect(validateCronExpression('0 0 * * FRI-SUN')).toBe(true);
   });
+
+  it('rejects multi-slash steps (croner: Invalid stepped range syntax)', () => {
+    expect(validateCronExpression('1/2/3 * * * *')).toBe(false);
+    expect(validateCronExpression('*/5/2 * * * *')).toBe(false);
+    expect(validateCronExpression('1-5/2/3 * * * *')).toBe(false);
+    // 单斜杠步长仍然合法
+    expect(validateCronExpression('1/2 * * * *')).toBe(true);
+  });
+});
+
+describe('getTriggerType robustness', () => {
+  it('returns Unknown instead of throwing for malformed kinds', () => {
+    // 已知变体键仍按变体名返回（仅缺失 payload 字段，由 describeTrigger 兜底）
+    expect(getTriggerType({ Once: {} } as unknown as TriggerKind)).toBe('Once');
+    expect(getTriggerType(null as unknown as TriggerKind)).toBe('Unknown');
+    expect(getTriggerType(undefined as unknown as TriggerKind)).toBe('Unknown');
+    expect(getTriggerType({} as unknown as TriggerKind)).toBe('Unknown');
+    expect(() => getTriggerType({} as unknown as TriggerKind)).not.toThrow();
+  });
+
+  it('keeps recognizing AgentStarted bare string', () => {
+    expect(getTriggerType('AgentStarted')).toBe('AgentStarted');
+    expect(getTriggerType('Whatever' as unknown as TriggerKind)).toBe('Unknown');
+  });
 });
 
 describe('describeTrigger', () => {
@@ -88,5 +112,33 @@ describe('describeTrigger', () => {
     expect(describeTrigger({ Network: { events: ['Connect'], network_name: 'MyHome' } })).toBe('网络变动：连接时 (MyHome)');
     expect(describeTrigger({ Network: { events: ['Connect', 'Disconnect'], network_name: null } })).toBe('网络变动：连接时/断开时（任意网络）');
     expect(describeTrigger({ Network: { events: ['Online'], network_name: null } })).toBe('网络变动：可上网时（任意网络）');
+  });
+
+  it('returns fallback text for malformed kinds without throwing or leaking undefined', () => {
+    const malformed: unknown[] = [
+      { Cron: {} },
+      { Once: {} },
+      { Fuzzy: { period: 'Foo', window_start: '09:00:00', window_end: '10:00:00', timezone: 'UTC' } },
+      { Fuzzy: {} },
+      { Network: { events: [], network_name: null } },
+      { Network: { events: ['Bogus'], network_name: null } },
+      { Network: {} },
+      null,
+      undefined,
+      {},
+    ];
+    for (const kind of malformed) {
+      const k = kind as TriggerKind;
+      expect(() => describeTrigger(k)).not.toThrow();
+      const text = describeTrigger(k);
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).not.toContain('undefined');
+      expect(text).not.toContain('[object');
+    }
+    // 未知事件跳过，不留尾斜杠
+    expect(describeTrigger({ Network: { events: ['Bogus'], network_name: null } } as unknown as TriggerKind)).toBe(
+      '网络变动：未知事件（任意网络）'
+    );
   });
 });
