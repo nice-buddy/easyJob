@@ -156,19 +156,68 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
                 .map(|dt| dt.with_timezone(&Utc))
         }
         TriggerKind::Network { .. } => None, // Event-driven (network change), not periodic
-        // NOTE: temporary placeholder; real implementation lands in Task 3
-        TriggerKind::Fuzzy { .. } => None,
+        TriggerKind::Fuzzy {
+            period,
+            window_start,
+            window_end,
+            timezone,
+        } => {
+            if window_end <= window_start {
+                return None;
+            }
+            let tz: Tz = Tz::from_str(timezone).unwrap_or(chrono_tz::UTC);
+            let local_after = after.with_timezone(&tz);
+            let mut candidate_date = local_after.date_naive();
+
+            for _ in 0..8 {
+                if period.matches_weekday(candidate_date.weekday()) {
+                    let picked = pick_random_time_in_window(window_start, window_end);
+                    if let Some(utc_dt) = resolve_candidate(&tz, candidate_date, picked, after) {
+                        return Some(utc_dt);
+                    }
+                    // 今天：随机点已过期但窗口未结束 → 在剩余窗口内重摇一次
+                    if candidate_date == local_after.date_naive()
+                        && local_after.time() < *window_end
+                    {
+                        let late_pick = pick_random_time_in_window(&local_after.time(), window_end);
+                        if let Some(utc_dt) =
+                            resolve_candidate(&tz, candidate_date, late_pick, after)
+                        {
+                            return Some(utc_dt);
+                        }
+                    }
+                }
+                candidate_date = candidate_date.succ_opt()?;
+            }
+            None
+        }
         TriggerKind::AgentStarted => None, // Handled upon agent startup event, not periodic
     }
+}
+
+fn pick_random_time_in_window(start: &NaiveTime, end: &NaiveTime) -> NaiveTime {
+    use rand::Rng;
+    let span = (*end - *start).num_seconds().max(1) as u64;
+    let offset = rand::thread_rng().gen_range(0..span);
+    *start + chrono::Duration::seconds(offset as i64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use easyjob_domain::trigger::NetworkEventKind;
+    use easyjob_domain::trigger::{FuzzyPeriod, NetworkEventKind};
 
     fn utc(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    fn fuzzy_kind(period: FuzzyPeriod) -> TriggerKind {
+        TriggerKind::Fuzzy {
+            period,
+            window_start: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            window_end: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            timezone: "UTC".into(),
+        }
     }
 
     #[test]
@@ -239,6 +288,67 @@ mod tests {
         };
         assert_eq!(
             evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
+            None
+        );
+    }
+
+    #[test]
+    fn fuzzy_daily_returns_time_within_window() {
+        // after = 2026-06-01 08:30Z → 今天窗口 [09:00,10:00) 内随机
+        let kind = fuzzy_kind(FuzzyPeriod::Daily);
+        let next = evaluate_next_occurrence(&kind, utc("2026-06-01T08:30:00Z")).unwrap();
+        let t = next.time();
+        assert!(
+            t >= NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+                && t < NaiveTime::from_hms_opt(10, 0, 0).unwrap()
+        );
+        assert_eq!(next.date_naive(), utc("2026-06-01T08:30:00Z").date_naive());
+    }
+
+    #[test]
+    fn fuzzy_mid_window_picks_in_remaining_window() {
+        // after 在窗口中段：结果必须仍在今天窗口内且 > after
+        let kind = fuzzy_kind(FuzzyPeriod::Daily);
+        let after = utc("2026-06-01T09:30:00Z");
+        let next = evaluate_next_occurrence(&kind, after).unwrap();
+        assert!(next > after);
+        assert!(next < utc("2026-06-01T10:00:00Z"));
+        assert_eq!(next.date_naive(), after.date_naive());
+    }
+
+    #[test]
+    fn fuzzy_window_over_moves_to_next_matching_day() {
+        // 周一(2026-06-01)窗口已过 → 下一个匹配日周二
+        let kind = fuzzy_kind(FuzzyPeriod::Weekdays);
+        let next = evaluate_next_occurrence(&kind, utc("2026-06-01T10:30:00Z")).unwrap();
+        assert_eq!(next.date_naive(), utc("2026-06-02T00:00:00Z").date_naive());
+        let t = next.time();
+        assert!(
+            t >= NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+                && t < NaiveTime::from_hms_opt(10, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn fuzzy_weekly_skips_unlisted_days() {
+        // Weekly 只含 Sunday：2026-06-01 是周一 → 下一个周日是 2026-06-07
+        let kind = fuzzy_kind(FuzzyPeriod::Weekly {
+            days_of_week: vec![chrono::Weekday::Sun],
+        });
+        let next = evaluate_next_occurrence(&kind, utc("2026-06-01T08:30:00Z")).unwrap();
+        assert_eq!(next.date_naive(), utc("2026-06-07T00:00:00Z").date_naive());
+    }
+
+    #[test]
+    fn fuzzy_invalid_window_returns_none() {
+        let kind = TriggerKind::Fuzzy {
+            period: FuzzyPeriod::Daily,
+            window_start: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            window_end: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            timezone: "UTC".into(),
+        };
+        assert_eq!(
+            evaluate_next_occurrence(&kind, utc("2026-06-01T08:30:00Z")),
             None
         );
     }
