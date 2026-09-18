@@ -251,19 +251,30 @@ fn parse_standard_cron(expression: &str) -> Option<croner::Cron> {
         .ok()
 }
 
+/// DST 回拨的重锚次数上限。
+///
+/// 回拨时同一段本地时间会重复出现，重复区间最长可达 2 小时（极少数时区）。每轮重锚只前进
+/// 一次匹配，因此上限必须覆盖「重复区间内最密的匹配」——每分钟匹配时是 120 次，这里取 240
+/// 留余量。上限若过小（例如 3），像 `*/15 1 * * *` 这种在重复小时里有 4 个匹配点的表达式会
+/// 耗尽重试并返回 `None`，而 scheduler 对 `None` 不做重排，触发器会**永久停止调度**。
+///
+/// 放大上限不会带来额外开销：表达式永不匹配时第一次 `find_next_occurrence` 就返回 `Err`
+/// 并由 `?` 短路；只有当候选确实落在 `after` 之前时才会继续下一轮，而每轮都是微秒级纯计算。
+const CRON_DST_RETRY_LIMIT: usize = 240;
+
 /// 用 croner 求下一次触发，并保证结果**在绝对时刻上**严格晚于 `after`。
 ///
 /// croner 的 `inclusive = false` 只保证「本地时间」严格晚于锚点，不保证「绝对时刻」晚于
 /// `after`：DST 回拨日同一个本地时刻会出现两次，croner 固定返回较早的那次，可能落在
 /// `after` 之前。若直接返回，scheduler 会判定 next_fire_at <= now 并立即重排，形成忙循环
-/// 且反复触发任务。这里以候选的绝对时刻重锚再搜，跨过重复的那个小时。
+/// 且反复触发任务。这里以候选的绝对时刻重锚再搜，逐次跨过重复区间内的匹配点。
 fn cron_next_occurrence(
     cron: &croner::Cron,
     tz: &Tz,
     after: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
     let mut anchor = after.with_timezone(tz);
-    for _ in 0..3 {
+    for _ in 0..CRON_DST_RETRY_LIMIT {
         let candidate = cron.find_next_occurrence(&anchor, false).ok()?;
         let candidate_utc = candidate.with_timezone(&Utc);
         if candidate_utc > after {
@@ -388,6 +399,36 @@ mod tests {
                     "{tz} {expr}: next {next} must be strictly after {after}"
                 );
                 after += Duration::minutes(15);
+            }
+        }
+    }
+
+    #[test]
+    fn cron_fall_back_dense_schedule_returns_future() {
+        // 重复小时内有多个匹配点（每分钟 / 每 15 分钟）时，重锚次数必须足够：
+        // 上限过小会耗尽重试并返回 None，而 scheduler 对 None 不重排 → 触发器永久停摆
+        let cases = [
+            ("America/New_York", "*/15 1 * * *", "2026-11-01T04:00:00Z"),
+            ("America/New_York", "*/1 1 * * *", "2026-11-01T04:00:00Z"),
+            ("Europe/London", "*/5 1 * * *", "2026-10-25T00:00:00Z"),
+        ];
+        for (tz, expr, start) in cases {
+            let kind = TriggerKind::Cron {
+                expression: expr.into(),
+                timezone: tz.into(),
+            };
+            // 逐分钟扫过整个回拨区间，每个采样点都必须得到「未来」的下一跳
+            let mut after = utc(start);
+            for _ in 0..240 {
+                let next = match evaluate_next_occurrence(&kind, after) {
+                    Some(next) => next,
+                    None => panic!("{tz} {expr} after {after} returned None（重锚次数不足）"),
+                };
+                assert!(
+                    next > after,
+                    "{tz} {expr}: next {next} must be strictly after {after}"
+                );
+                after += Duration::minutes(1);
             }
         }
     }
