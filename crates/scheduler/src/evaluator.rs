@@ -194,6 +194,18 @@ pub fn evaluate_next_occurrence(kind: &TriggerKind, after: DateTime<Utc>) -> Opt
     }
 }
 
+/// 校验 cron 表达式是否为受支持的 5 字段合法表达式（agent 侧 warn 日志用）
+pub fn validate_cron_expression(expression: &str) -> bool {
+    // 规格仅支持标准 5 字段；croner 会接受 @daily 等别名，这里一并拒绝
+    if expression.split_whitespace().count() != 5 {
+        return false;
+    }
+    // NOTE: croner 的 `FromStr` 不校验表达式（恒返回 `Ok`），真正的校验发生在 `Cron::parse`
+    croner::Cron::from_str(expression)
+        .and_then(|mut cron| cron.parse())
+        .is_ok()
+}
+
 fn pick_random_time_in_window(start: &NaiveTime, end: &NaiveTime) -> NaiveTime {
     use rand::Rng;
     let span = (*end - *start).num_seconds().max(1) as u64;
@@ -277,6 +289,28 @@ mod tests {
             evaluate_next_occurrence(&kind, utc("2026-06-01T00:00:00Z")),
             None
         );
+    }
+
+    #[test]
+    fn validate_cron_expression_accepts_valid_5_field() {
+        assert!(validate_cron_expression("30 9 * * *"));
+        assert!(validate_cron_expression("*/5 * * * *"));
+        assert!(validate_cron_expression("0 0 1 1 0"));
+    }
+
+    #[test]
+    fn validate_cron_expression_rejects_illegal_values() {
+        // 5 字段但取值非法：必须真正经过 croner 的 parse 校验（防「FromStr 恒 Ok」回归）
+        assert!(!validate_cron_expression("99 99 99 99 99"));
+        assert!(!validate_cron_expression("99 * * * *"));
+        assert!(!validate_cron_expression("*/0 * * * *"));
+    }
+
+    #[test]
+    fn validate_cron_expression_rejects_wrong_field_count_and_aliases() {
+        assert!(!validate_cron_expression("* * * *")); // 4 字段
+        assert!(!validate_cron_expression("0 */5 * * * *")); // 6 字段
+        assert!(!validate_cron_expression("@daily")); // 别名，规格不支持
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::network::{dispatch_network_event, spawn_network_monitor};
 use async_trait::async_trait;
 use easyjob_common::{ExecutionId, Result, TaskId};
 use easyjob_domain::execution::{Execution, ExecutionStatus};
@@ -36,6 +37,8 @@ pub struct AgentService {
     active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
     /// Shared cancellation token — handler's trigger_now and the dispatcher both derive child tokens from this.
     exec_cancel_token: CancellationToken,
+    net_mon_handle: tokio::task::JoinHandle<()>,
+    net_disp_handle: tokio::task::JoinHandle<()>,
 }
 
 impl AgentService {
@@ -68,6 +71,7 @@ impl AgentService {
                 .triggers
                 .iter()
                 .any(|tr| tr.enabled && matches!(tr.kind, TriggerKind::AgentStarted));
+            warn_invalid_cron_triggers(&task);
             let _ = scheduler_tx
                 .send(SchedulerCommand::add_task(task.clone()))
                 .await;
@@ -85,6 +89,17 @@ impl AgentService {
         // so both the handler (for trigger_now) and the dispatcher loop share the same objects.
         let exec_cancel_token = CancellationToken::new();
         let (event_tx, _) = tokio::sync::broadcast::channel(1024);
+
+        // 网络变动触发：监控 + 派发双后台任务
+        let (net_ev_tx, mut net_ev_rx) = mpsc::channel::<crate::network::NetworkEvent>(64);
+        let net_mon_handle = spawn_network_monitor(net_ev_tx);
+        let net_task_repo = task_repo.clone();
+        let net_scheduler_tx = scheduler_tx.clone();
+        let net_disp_handle = tokio::spawn(async move {
+            while let Some(ev) = net_ev_rx.recv().await {
+                dispatch_network_event(ev, net_task_repo.clone(), net_scheduler_tx.clone()).await;
+            }
+        });
 
         let handler = Arc::new(AgentRpcHandler {
             task_repo: task_repo.clone(),
@@ -115,6 +130,8 @@ impl AgentService {
             shutdown_notify,
             active_executions,
             exec_cancel_token,
+            net_mon_handle,
+            net_disp_handle,
         })
     }
 
@@ -360,8 +377,28 @@ impl AgentService {
         let _ = self.scheduler_tx.send(SchedulerCommand::Shutdown).await;
         let _ = self.scheduler_handle.await;
 
+        self.net_disp_handle.abort();
+        self.net_mon_handle.abort();
+
         info!("Agent service successfully shut down");
         Ok(())
+    }
+}
+
+/// 对启用触发器中的非法 cron 表达式发出告警（不阻止保存/加载，仅提示）
+fn warn_invalid_cron_triggers(task: &Task) {
+    for tr in &task.triggers {
+        if tr.enabled {
+            if let TriggerKind::Cron { expression, .. } = &tr.kind {
+                if !easyjob_scheduler::validate_cron_expression(expression) {
+                    tracing::warn!(
+                        "Task {} has invalid cron expression: {:?}",
+                        task.id,
+                        expression
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -559,6 +596,7 @@ impl RequestHandler for AgentRpcHandler {
                 };
                 match self.task_repo.save(&task).await {
                     Ok(()) => {
+                        warn_invalid_cron_triggers(&task);
                         let _ = self
                             .scheduler_tx
                             .send(SchedulerCommand::add_task(task.clone()))

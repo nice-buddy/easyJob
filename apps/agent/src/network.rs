@@ -380,6 +380,12 @@ mod platform_windows {
         }
     }
 
+    impl Drop for WindowsNetworkWatcher {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
     fn start_interface_watch(state: Arc<WatcherState>) {
         // 泄漏一个强引用作为回调上下文，保证进程生命周期内始终有效
         let ctx = Arc::into_raw(state).cast::<c_void>();
