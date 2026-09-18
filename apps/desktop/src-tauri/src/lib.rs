@@ -112,45 +112,45 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = &app_handle;
             match event {
-            tauri::RunEvent::ExitRequested { .. } => {
-                tracing::info!("Application exit requested, shutting down agent daemon...");
-                let manager = manager_for_exit.clone();
-                tauri::async_runtime::block_on(async move {
-                    manager.shutdown_agent().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                });
-            }
-            #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen { .. } => {
-                set_dock_visible(true);
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                tauri::RunEvent::ExitRequested { .. } => {
+                    tracing::info!("Application exit requested, shutting down agent daemon...");
+                    let manager = manager_for_exit.clone();
+                    tauri::async_runtime::block_on(async move {
+                        manager.shutdown_agent().await;
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    });
+                }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    set_dock_visible(true);
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
 
-                    // 仅当最近 30 秒内触发过通知（横幅点击唤起场景）时，自动跳转到执行日志
-                    let should_navigate = {
-                        if let Ok(mut lock) = last_notification_for_reopen.lock() {
-                            if let Some(t) = *lock {
-                                if t.elapsed() < std::time::Duration::from_secs(30) {
-                                    *lock = None; // 消费通知状态，避免后续日常 Dock 激活重复跳转
-                                    true
+                        // 仅当最近 30 秒内触发过通知（横幅点击唤起场景）时，自动跳转到执行日志
+                        let should_navigate = {
+                            if let Ok(mut lock) = last_notification_for_reopen.lock() {
+                                if let Some(t) = *lock {
+                                    if t.elapsed() < std::time::Duration::from_secs(30) {
+                                        *lock = None; // 消费通知状态，避免后续日常 Dock 激活重复跳转
+                                        true
+                                    } else {
+                                        false
+                                    }
                                 } else {
                                     false
                                 }
                             } else {
                                 false
                             }
-                        } else {
-                            false
-                        }
-                    };
+                        };
 
-                    if should_navigate {
-                        let _ = window.emit("navigate", "executions");
+                        if should_navigate {
+                            let _ = window.emit("navigate", "executions");
+                        }
                     }
                 }
-            }
-            _ => {}
+                _ => {}
             }
         });
 }
