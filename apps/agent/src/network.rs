@@ -214,8 +214,15 @@ mod platform_macos {
 
             let cb_running = running.clone();
             let cb_debounce = debouncer.clone();
+            // start 时 update handler 会立即用当前 path 触发一次快照回调（非状态变迁），
+            // 与 Windows 侧 InitialNotification=false 对齐，故整帧跳过第一次回调。
+            let first_call = Arc::new(AtomicBool::new(true));
+            let cb_first = first_call.clone();
             let cb = RcBlock::new(move |path: *mut c_void| {
                 if !cb_running.load(Ordering::Relaxed) {
+                    return;
+                }
+                if cb_first.swap(false, Ordering::Relaxed) {
                     return;
                 }
                 let status = unsafe { nw_path_get_status(path) };
@@ -347,10 +354,6 @@ mod platform_windows {
         probe_handle: Option<tokio::runtime::Handle>,
     }
 
-    // 含 Win32 句柄与裸指针；回调跨系统线程访问
-    unsafe impl Send for WatcherState {}
-    unsafe impl Sync for WatcherState {}
-
     impl WindowsNetworkWatcher {
         pub fn start<F>(on_event: F) -> Self
         where
@@ -386,6 +389,8 @@ mod platform_windows {
         };
         if res != WIN32_ERROR(0) {
             error!("NotifyIpInterfaceChange failed: {}", res.0);
+            // 注册失败则回收上面泄漏的强引用（成功时保持泄漏，供系统回调长期使用）
+            unsafe { drop(Arc::from_raw(ctx as *const WatcherState)) };
         }
     }
 
@@ -544,11 +549,10 @@ mod platform_windows {
                 {
                     let conn = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
                     let raw = &conn.wlanAssociationAttributes.dot11Ssid;
-                    if raw.uSSIDLength > 0 {
-                        ssid = Some(
-                            String::from_utf8_lossy(&raw.ucSSID[..raw.uSSIDLength as usize])
-                                .to_string(),
-                        );
+                    // clamp 到数组实际长度：越界切片会在 FFI 回调内 panic 并 abort 进程
+                    let len = (raw.uSSIDLength as usize).min(raw.ucSSID.len());
+                    if len > 0 {
+                        ssid = Some(String::from_utf8_lossy(&raw.ucSSID[..len]).to_string());
                     }
                     WlanFreeMemory(data as *const c_void);
                     if ssid.is_some() {
