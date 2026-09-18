@@ -2,7 +2,8 @@
 
 日期：2026-09-18
 状态：已确认（方案 A：事件驱动网络监控器作为独立后台任务）
-平台范围：macOS + Windows（不支持 Linux，无需考虑）
+平台范围：**全栈仅考虑 macOS + Windows**。领域模型、调度器、Agent、持久化、
+前端所有层均不编写任何其他平台（Linux 等）的适配分支或条件隐藏逻辑。
 
 ## 1. 背景与目标
 
@@ -22,7 +23,7 @@ easyJob 现有 5 类触发器（Once / Interval / Daily / Weekly / AgentStarted�
 | Fuzzy 语义 | 周期窗口内随机（非单次区间随机） |
 | Network 事件 | Connect、Disconnect、Online 三种全部支持，可多选 |
 | Cron 格式 | 标准 5 字段（分 时 日 月 周），不含秒、不含 @别名 |
-| 平台范围 | 仅 macOS + Windows；不考虑 Linux |
+| 平台范围 | 全栈仅 macOS + Windows；不编写任何其他平台（Linux 等）的适配分支 |
 | 架构方案 | 方案 A：NetworkMonitor 独立后台任务 + TriggerNow 派发，零侵入调度循环 |
 
 ## 3. 总体架构
@@ -428,7 +429,7 @@ export type TriggerKind =
 
 ## 12. 明确不做（YAGNI）
 
-- Linux 网络监控（平台范围外）
+- 其他平台（Linux 等）的任何适配分支（含前端平台隐藏逻辑）
 - cron 6/7 字段（秒级）与 `@` 别名
 - Fuzzy 触发点持久化 / 种子复现
 - Network 的"网络切换"（A→B 直连）细分事件（Connect 已覆盖）
