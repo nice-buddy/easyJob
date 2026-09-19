@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { NButton, NInput, NSwitch, NTag, NEmpty, useMessage, useDialog } from 'naive-ui';
-import { Plus, Search, Play, Edit2, Trash2, Download, Upload, Copy } from 'lucide-vue-next';
+import { Plus, Search, Play, Edit2, Trash2, Download, Upload, Copy, RefreshCw } from 'lucide-vue-next';
 import TaskDrawer from '../components/task/TaskDrawer.vue';
 import LiveLogDrawer from '../components/console/LiveLogDrawer.vue';
 import TaskExportModal from '../components/task/TaskExportModal.vue';
 import TaskImportModal from '../components/task/TaskImportModal.vue';
 import { useTaskStore } from '../stores/taskStore';
 import { useExecutionStore } from '../stores/executionStore';
-import type { Task } from '../types/task';
-import { cloneTaskForDuplicate } from '../types/task';
+import type { Task, Trigger } from '../types/task';
+import { cloneTaskForDuplicate, describeTriggerShort, formatDateTimeShort, formatDateTimeTitle, getTriggerType } from '../types/task';
+import { getStatusLabel } from '../types/execution';
 
 const emit = defineEmits<{
   (e: 'create-task'): void;
@@ -126,6 +127,74 @@ async function handleDelete(task: Task) {
     }
   }
 }
+
+const rerollingKey = ref<string | null>(null);
+
+function triggerNextFire(taskId: string, triggerId: string): string | null {
+  const entry = taskStore.scheduleOverview[taskId];
+  return entry?.triggers.find((trigger) => trigger.trigger_id === triggerId)?.next_fire_at ?? null;
+}
+
+function nextFireText(taskId: string, triggerId: string): string {
+  const iso = triggerNextFire(taskId, triggerId);
+  return iso ? formatDateTimeShort(iso) : '—';
+}
+
+function nextFireTitle(taskId: string, triggerId: string): string {
+  const iso = triggerNextFire(taskId, triggerId);
+  return iso ? formatDateTimeTitle(iso) : '当前没有排定的下次触发时间';
+}
+
+function isFuzzyTrigger(trigger: Trigger): boolean {
+  return getTriggerType(trigger.kind) === 'Fuzzy';
+}
+
+async function handleReroll(task: Task, trigger: Trigger) {
+  const key = `${task.id}:${trigger.id}`;
+  rerollingKey.value = key;
+  try {
+    await taskStore.rerollTrigger(task.id, trigger.id);
+  } catch (e: any) {
+    message.error('重摇失败: ' + (e?.message || e));
+  } finally {
+    rerollingKey.value = null;
+  }
+}
+
+function formatDuration(durationMs: number | null): string {
+  if (durationMs === null || durationMs === undefined) return '';
+  const secs = durationMs / 1000;
+  return secs < 60 ? `${secs.toFixed(1)}s` : `${Math.round(secs)}s`;
+}
+
+function errSummary(err: string): string {
+  const oneLine = err.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 60 ? `${oneLine.slice(0, 60)}…` : oneLine;
+}
+
+function lastRunText(taskId: string): string {
+  const lastRun = taskStore.scheduleOverview[taskId]?.last_run;
+  if (!lastRun) return '上次 —';
+  const base = `上次 ${formatDateTimeShort(lastRun.started_at)} ${getStatusLabel(lastRun.status)}`;
+  if (lastRun.status === 'Succeeded') {
+    const duration = formatDuration(lastRun.duration_ms);
+    return duration ? `${base} · ${duration}` : base;
+  }
+  const summary = lastRun.error_message ? errSummary(lastRun.error_message) : '';
+  return summary ? `${base} · ${summary}` : base;
+}
+
+function lastRunTitle(taskId: string): string {
+  const lastRun = taskStore.scheduleOverview[taskId]?.last_run;
+  return lastRun ? formatDateTimeTitle(lastRun.started_at) : '从未执行';
+}
+
+function lastRunClass(taskId: string): string {
+  const status = taskStore.scheduleOverview[taskId]?.last_run?.status;
+  return status === 'Failed' || status === 'TimedOut' || status === 'Interrupted'
+    ? 'text-red-500'
+    : 'text-slate-500 dark:text-zinc-400';
+}
 </script>
 
 <template>
@@ -197,9 +266,6 @@ async function handleDelete(task: Task) {
           <div>
             <div class="flex items-center gap-2">
               <span class="font-semibold text-sm">{{ task.name }}</span>
-              <NTag size="small" :bordered="false" type="info">
-                {{ task.triggers.length }} 个触发器
-              </NTag>
               <NTag size="small" :bordered="false" type="default">
                 {{ task.actions.length }} 个动作
               </NTag>
@@ -207,6 +273,31 @@ async function handleDelete(task: Task) {
             <p class="text-xs text-slate-500 dark:text-zinc-400 mt-1">
               {{ task.description || '暂无描述' }}
             </p>
+            <div
+              v-for="trigger in task.triggers"
+              :key="trigger.id"
+              class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-400 mt-1"
+            >
+              <span>{{ describeTriggerShort(trigger.kind) }}</span>
+              <span>→ 下次</span>
+              <span :title="nextFireTitle(task.id, trigger.id)">
+                {{ nextFireText(task.id, trigger.id) }}
+              </span>
+              <NButton
+                v-if="isFuzzyTrigger(trigger)"
+                size="tiny"
+                secondary
+                :loading="rerollingKey === `${task.id}:${trigger.id}`"
+                @click="handleReroll(task, trigger)"
+              >
+                <template #icon>
+                  <RefreshCw class="w-3 h-3" />
+                </template>
+              </NButton>
+            </div>
+            <div class="text-xs mt-1" :class="lastRunClass(task.id)" :title="lastRunTitle(task.id)">
+              {{ lastRunText(task.id) }}
+            </div>
           </div>
         </div>
 
