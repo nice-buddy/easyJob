@@ -847,15 +847,18 @@ async fn test_find_latest_run_per_task_tie_breaks_by_id_desc() {
     exec_b.status = ExecutionStatus::Failed;
     exec_b.started_at = started_at;
 
-    // 让 id 字符串较大的那条后插入，确保「取较大 id」不是插入顺序导致的
-    let (first, second, expected_status) = if exec_a.id.to_string() < exec_b.id.to_string() {
-        (exec_a, exec_b, ExecutionStatus::Failed)
+    // 先插入较大 id 的那条，再插入较小 id 的那条：
+    // 这样「按插入顺序取最后一条」会取到较小 id，与期望不同，
+    // 从而真正锁住 id DESC 的次级排序。
+    let (bigger, smaller) = if exec_a.id.to_string() > exec_b.id.to_string() {
+        (exec_a, exec_b)
     } else {
-        (exec_b, exec_a, ExecutionStatus::Succeeded)
+        (exec_b, exec_a)
     };
-    let expected_id = second.id;
-    exec_repo.create_run(&first).await.unwrap();
-    exec_repo.create_run(&second).await.unwrap();
+    let expected_id = bigger.id;
+    let expected_status = bigger.status;
+    exec_repo.create_run(&bigger).await.unwrap();
+    exec_repo.create_run(&smaller).await.unwrap();
 
     let result = exec_repo
         .find_latest_run_per_task(&[task.id])
