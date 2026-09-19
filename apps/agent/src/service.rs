@@ -1,6 +1,6 @@
 use crate::network::{dispatch_network_event, spawn_network_monitor};
 use async_trait::async_trait;
-use easyjob_common::{ExecutionId, Result, TaskId};
+use easyjob_common::{ExecutionId, Result, TaskId, TriggerId};
 use easyjob_domain::execution::{Execution, ExecutionStatus};
 use easyjob_domain::task::Task;
 use easyjob_domain::trigger::TriggerKind;
@@ -13,6 +13,7 @@ use easyjob_persistence::execution_repo::{ExecutionRepository, SqliteExecutionRe
 use easyjob_persistence::recovery::recover_dangling_executions;
 use easyjob_persistence::settings_repo::{SettingsRepository, SqliteSettingsRepository};
 use easyjob_persistence::task_repo::{SqliteTaskRepository, TaskRepository};
+use easyjob_scheduler::queue::ScheduleQueue;
 use easyjob_scheduler::scheduler::{Scheduler, SchedulerCommand, TriggerEvent};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ pub struct AgentService {
     settings_repo: Arc<SqliteSettingsRepository>,
     exec_manager: Arc<ExecutionManager>,
     scheduler_tx: mpsc::Sender<SchedulerCommand>,
+    sched_queue: Arc<Mutex<ScheduleQueue>>,
     event_rx: mpsc::Receiver<TriggerEvent>,
     scheduler_handle: tokio::task::JoinHandle<()>,
     ipc_server: IpcServer,
@@ -59,7 +61,7 @@ impl AgentService {
         let sched_queue = scheduler.queue();
         let sched_event_tx = scheduler.event_sender();
         let scheduler_handle = tokio::spawn(Scheduler::run(
-            sched_queue,
+            sched_queue.clone(),
             scheduler_cmd_rx,
             sched_event_tx,
         ));
@@ -107,6 +109,7 @@ impl AgentService {
             settings_repo: settings_repo.clone(),
             exec_manager: exec_manager.clone(),
             scheduler_tx: scheduler_tx.clone(),
+            sched_queue: sched_queue.clone(),
             start_time,
             shutdown_notify: shutdown_notify.clone(),
             active_executions: active_executions.clone(),
@@ -122,6 +125,7 @@ impl AgentService {
             settings_repo,
             exec_manager,
             scheduler_tx,
+            sched_queue,
             event_rx,
             scheduler_handle,
             ipc_server,
@@ -149,6 +153,10 @@ impl AgentService {
 
     pub fn execution_manager(&self) -> Arc<ExecutionManager> {
         self.exec_manager.clone()
+    }
+
+    pub fn schedule_queue(&self) -> Arc<Mutex<ScheduleQueue>> {
+        self.sched_queue.clone()
     }
 
     pub fn active_executions(&self) -> Arc<Mutex<HashMap<ExecutionId, CancellationToken>>> {
@@ -442,12 +450,36 @@ pub fn trigger_log_retention_purge(
     });
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TriggerOverview {
+    pub trigger_id: TriggerId,
+    pub next_fire_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LastRunOverview {
+    pub status: ExecutionStatus,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub duration_ms: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TaskOverviewEntry {
+    pub task_id: TaskId,
+    pub triggers: Vec<TriggerOverview>,
+    pub last_run: Option<LastRunOverview>,
+}
+
 pub struct AgentRpcHandler {
     pub(crate) task_repo: Arc<SqliteTaskRepository>,
     pub(crate) exec_repo: Arc<SqliteExecutionRepository>,
     pub(crate) settings_repo: Arc<SqliteSettingsRepository>,
     pub(crate) exec_manager: Arc<ExecutionManager>,
     pub(crate) scheduler_tx: mpsc::Sender<SchedulerCommand>,
+    pub(crate) sched_queue: Arc<Mutex<ScheduleQueue>>,
     pub(crate) start_time: Instant,
     pub(crate) shutdown_notify: Arc<Notify>,
     pub(crate) active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
@@ -470,6 +502,7 @@ impl AgentRpcHandler {
         active_executions: Arc<Mutex<HashMap<ExecutionId, CancellationToken>>>,
         event_tx: broadcast::Sender<IpcEvent>,
         exec_cancel_token: CancellationToken,
+        sched_queue: Arc<Mutex<ScheduleQueue>>,
     ) -> Self {
         Self {
             task_repo,
@@ -477,6 +510,7 @@ impl AgentRpcHandler {
             settings_repo,
             exec_manager,
             scheduler_tx,
+            sched_queue,
             start_time,
             shutdown_notify,
             active_executions,
@@ -836,6 +870,49 @@ impl RequestHandler for AgentRpcHandler {
 
                 // Return the execution object to the caller immediately
                 IpcResponse::success(req.id, exec_value)
+            }
+            "task.overview" => {
+                let tasks = match self.task_repo.find_all().await {
+                    Ok(tasks) => tasks,
+                    Err(e) => return IpcResponse::error(req.id, e.to_string()),
+                };
+                let task_ids: Vec<TaskId> = tasks.iter().map(|task| task.id).collect();
+                let latest_runs = match self.exec_repo.find_latest_run_per_task(&task_ids).await {
+                    Ok(runs) => runs,
+                    Err(e) => return IpcResponse::error(req.id, e.to_string()),
+                };
+                let next_by_trigger = {
+                    let queue = self.sched_queue.lock().await;
+                    queue.next_fire_by_trigger()
+                };
+
+                let overview: Vec<TaskOverviewEntry> = tasks
+                    .iter()
+                    .map(|task| TaskOverviewEntry {
+                        task_id: task.id,
+                        triggers: task
+                            .triggers
+                            .iter()
+                            .map(|trigger| TriggerOverview {
+                                trigger_id: trigger.id,
+                                next_fire_at: next_by_trigger.get(&(task.id, trigger.id)).copied(),
+                            })
+                            .collect(),
+                        last_run: latest_runs.get(&task.id).map(|run| LastRunOverview {
+                            status: run.status,
+                            started_at: run.started_at,
+                            finished_at: run.finished_at,
+                            duration_ms: run.duration_ms,
+                            exit_code: run.exit_code,
+                            error_message: run.error_message.clone(),
+                        }),
+                    })
+                    .collect();
+
+                match serde_json::to_value(overview) {
+                    Ok(value) => IpcResponse::success(req.id, value),
+                    Err(e) => IpcResponse::error(req.id, e.to_string()),
+                }
             }
             "execution.list" => {
                 let limit = if req.params.is_object() && req.params.get("limit").is_some() {

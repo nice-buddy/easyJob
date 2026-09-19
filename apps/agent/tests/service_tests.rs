@@ -632,7 +632,11 @@ async fn test_execution_finished_event_contains_notification_metadata() {
     let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
 }
 
-async fn setup_test_agent_handler() -> (AgentRpcHandler, tempfile::TempDir) {
+async fn setup_test_agent_handler() -> (
+    AgentRpcHandler,
+    std::sync::Arc<tokio::sync::Mutex<easyjob_scheduler::queue::ScheduleQueue>>,
+    tempfile::TempDir,
+) {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("agent_test.db");
     let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
@@ -647,7 +651,20 @@ async fn setup_test_agent_handler() -> (AgentRpcHandler, tempfile::TempDir) {
     ));
     let exec_manager = Arc::new(easyjob_executor::manager::ExecutionManager::new(4));
 
-    let (scheduler_tx, _scheduler_rx) = tokio::sync::mpsc::channel(100);
+    let (sched_event_tx, _sched_event_rx) =
+        tokio::sync::mpsc::channel::<easyjob_scheduler::scheduler::TriggerEvent>(16);
+    let (scheduler, scheduler_cmd_rx) =
+        easyjob_scheduler::scheduler::Scheduler::new(sched_event_tx);
+    let sched_queue = scheduler.queue();
+    let scheduler_tx = scheduler.sender();
+    let handle_queue = sched_queue.clone();
+    let handle_event_tx = scheduler.event_sender();
+    tokio::spawn(easyjob_scheduler::scheduler::Scheduler::run(
+        handle_queue,
+        scheduler_cmd_rx,
+        handle_event_tx,
+    ));
+
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let active_executions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
@@ -664,14 +681,15 @@ async fn setup_test_agent_handler() -> (AgentRpcHandler, tempfile::TempDir) {
         active_executions,
         event_tx,
         exec_cancel_token,
+        sched_queue.clone(),
     );
 
-    (handler, dir)
+    (handler, sched_queue, dir)
 }
 
 #[tokio::test]
 async fn test_agent_settings_ipc() {
-    let (handler, _dir) = setup_test_agent_handler().await;
+    let (handler, _sched_queue, _dir) = setup_test_agent_handler().await;
 
     // 1. settings.get
     let req = IpcRequest::new("settings.get", serde_json::json!({}));
@@ -855,7 +873,7 @@ async fn test_agent_log_retention_purge_on_task_completion() {
 
 #[tokio::test]
 async fn test_trigger_log_retention_purge_helper_policies() {
-    let (handler, _dir) = setup_test_agent_handler().await;
+    let (handler, _sched_queue, _dir) = setup_test_agent_handler().await;
     let exec_repo = handler.execution_repository();
     let settings_repo = handler.settings_repository();
     let task_repo = handler.task_repository();
@@ -936,5 +954,142 @@ async fn test_trigger_log_retention_purge_helper_policies() {
     assert!(
         exec_repo.find_run_by_id(&run2_id).await.unwrap().is_some(),
         "Permanent policy should not purge runs"
+    );
+}
+
+#[tokio::test]
+async fn test_task_overview_ipc_reports_next_fire_and_last_run() {
+    let (handler, sched_queue, _dir) = setup_test_agent_handler().await;
+    let task_repo = handler.task_repository();
+    let exec_repo = handler.execution_repository();
+
+    let task_id = TaskId::new();
+    let daily_trigger_id = TriggerId::new();
+    let network_trigger_id = TriggerId::new();
+    let daily_time = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+    let task = Task {
+        id: task_id,
+        name: "Overview Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![
+            Trigger {
+                id: daily_trigger_id,
+                task_id,
+                enabled: true,
+                kind: TriggerKind::Daily {
+                    time: daily_time,
+                    timezone: "UTC".into(),
+                },
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            Trigger {
+                id: network_trigger_id,
+                task_id,
+                enabled: true,
+                kind: TriggerKind::Network {
+                    events: vec![easyjob_domain::trigger::NetworkEventKind::Connect],
+                    network_name: None,
+                },
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        ],
+        actions: vec![],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    task_repo.save(&task).await.unwrap();
+
+    // 无触发器、无运行记录的任务
+    let empty_task_id = TaskId::new();
+    let empty_task = Task {
+        id: empty_task_id,
+        name: "Empty Overview Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    task_repo.save(&empty_task).await.unwrap();
+
+    // 队列中只放 Daily 触发器的条目（Network 触发器永远不会入队）
+    let next_fire = chrono::DateTime::parse_from_rfc3339("2026-09-20T09:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    {
+        let mut q = sched_queue.lock().await;
+        q.push(easyjob_scheduler::queue::ScheduledItem {
+            task_id,
+            trigger_id: daily_trigger_id,
+            next_fire_at: next_fire,
+            generation: 1,
+        });
+    }
+
+    let mut run = easyjob_domain::execution::Execution::new(task_id, Some(daily_trigger_id), None);
+    run.status = easyjob_domain::execution::ExecutionStatus::Succeeded;
+    run.started_at = chrono::Utc::now() - chrono::Duration::minutes(5);
+    run.finished_at = Some(chrono::Utc::now());
+    run.duration_ms = Some(1234);
+    run.exit_code = Some(0);
+    exec_repo.create_run(&run).await.unwrap();
+
+    let res = handler
+        .handle_request(IpcRequest::new("task.overview", serde_json::json!({})))
+        .await;
+    assert!(res.ok, "task.overview failed: {:?}", res.error);
+    let data = res.data.unwrap();
+    let entries = data.as_array().expect("overview must be an array");
+
+    let entry = entries
+        .iter()
+        .find(|e| e["task_id"] == task_id.to_string())
+        .expect("task entry present");
+    let triggers = entry["triggers"].as_array().expect("triggers array");
+    assert_eq!(triggers.len(), 2);
+
+    let daily = triggers
+        .iter()
+        .find(|t| t["trigger_id"] == daily_trigger_id.to_string())
+        .expect("daily trigger present");
+    let daily_next: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(daily["next_fire_at"].clone()).unwrap();
+    assert_eq!(daily_next, next_fire);
+
+    let network = triggers
+        .iter()
+        .find(|t| t["trigger_id"] == network_trigger_id.to_string())
+        .expect("network trigger present");
+    assert!(
+        network["next_fire_at"].is_null(),
+        "network trigger has no queued entry"
+    );
+
+    let last_run = &entry["last_run"];
+    assert_eq!(last_run["status"], "Succeeded");
+    assert_eq!(last_run["duration_ms"], 1234);
+    assert_eq!(last_run["exit_code"], 0);
+    assert!(last_run["error_message"].is_null());
+
+    let empty_entry = entries
+        .iter()
+        .find(|e| e["task_id"] == empty_task_id.to_string())
+        .expect("empty task entry present");
+    assert_eq!(empty_entry["triggers"].as_array().map(|a| a.len()), Some(0));
+    assert!(
+        empty_entry["last_run"].is_null(),
+        "never-executed task must report last_run = null"
     );
 }
