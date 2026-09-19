@@ -289,6 +289,27 @@ export function parseDate(iso?: string | null): number | null {
   return isNaN(time) ? null : time;
 }
 
+export interface TaskOverviewTrigger {
+  trigger_id: TriggerId;
+  /** null 表示当前队列中没有该触发器的有效条目（Network 事件触发、已过期的 Once、任务或触发器被停用） */
+  next_fire_at: string | null;
+}
+
+export interface TaskOverviewLastRun {
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  exit_code: number | null;
+  error_message: string | null;
+}
+
+export interface TaskOverview {
+  task_id: TaskId;
+  triggers: TaskOverviewTrigger[];
+  last_run: TaskOverviewLastRun | null;
+}
+
 export interface Task {
   id: TaskId;
   name: string;

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Task, TaskId, SystemSettings } from '../types/task';
+import type { Task, TaskId, TriggerId, TaskOverview, SystemSettings } from '../types/task';
 import type { Execution, ExecutionId } from '../types/execution';
 import type { AgentStatus } from '../types/agent';
 
@@ -59,6 +59,20 @@ export async function getSystemSettings(): Promise<SystemSettings> {
 
 export async function saveSystemSettings(settings: SystemSettings): Promise<SystemSettings> {
   return await invoke<SystemSettings>('save_system_settings', { settings });
+}
+
+export async function getTaskOverview(): Promise<TaskOverview[]> {
+  return await invoke<TaskOverview[]>('task_overview');
+}
+
+export async function rerollTrigger(
+  taskId: TaskId,
+  triggerId: TriggerId
+): Promise<{ next_fire_at: string | null }> {
+  return await invoke<{ next_fire_at: string | null }>('reroll_trigger', {
+    taskId,
+    triggerId,
+  });
 }
 
 
