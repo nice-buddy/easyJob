@@ -130,6 +130,35 @@ pub fn spawn_network_monitor(event_tx: mpsc::Sender<NetworkEvent>) -> tokio::tas
     })
 }
 
+/// 状态边沿检测：把「状态快照回调」收敛成「只在状态真正变化时才上报」。
+///
+/// 平台 API 的通知常常在状态**未变**时也会回调（path 因路由/DNS/接口增删等变化、
+/// 接口参数变更等）。若按回调逐帧上报，就会把同一状态的重复快照当成新事件发出。
+/// 这里按 key 记录最近一次观测到的值：
+/// - 首次见到该 key：只记录、不上报（启动时不产生事件）
+/// - 与上次观测相同：不上报
+/// - 与上次观测不同：上报
+pub(crate) struct EdgeDetector<K> {
+    seen: std::sync::Mutex<std::collections::HashMap<K, bool>>,
+}
+
+impl<K: std::hash::Hash + Eq + Clone> EdgeDetector<K> {
+    pub fn new() -> Self {
+        Self {
+            seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// 返回 true 表示「该 key 的状态相对上次观测发生了变化」，调用方应当上报事件。
+    pub fn changed(&self, key: K, value: bool) -> bool {
+        let mut seen = self.seen.lock().unwrap();
+        match seen.insert(key, value) {
+            None => false,
+            Some(previous) => previous != value,
+        }
+    }
+}
+
 /// 防抖共享状态：同目标事件 500ms 内去重
 pub(crate) struct Debouncer {
     last_kind: std::sync::Mutex<Option<(NetworkEventKind, std::time::Instant)>>,
@@ -158,7 +187,7 @@ impl Debouncer {
 
 #[cfg(target_os = "macos")]
 mod platform_macos {
-    use super::{Debouncer, NetworkEvent};
+    use super::{Debouncer, EdgeDetector, NetworkEvent};
     use block2::{Block, RcBlock};
     use std::ffi::{c_char, c_void};
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -214,26 +243,34 @@ mod platform_macos {
 
             let cb_running = running.clone();
             let cb_debounce = debouncer.clone();
-            // start 时 update handler 会立即用当前 path 触发一次快照回调（非状态变迁），
-            // 与 Windows 侧 InitialNotification=false 对齐，故整帧跳过第一次回调。
-            let first_call = Arc::new(AtomicBool::new(true));
-            let cb_first = first_call.clone();
+            // 只在 path 的 status 真正发生变化时上报。
+            //
+            // nw_path_monitor 的 update handler 是在 path 发生**任意**变化时被调用的
+            // （接口增删、路由、DNS 等），并非只在 status 变化时调用；接口切换过程中它还会
+            // 先给出一帧仍带**旧** status 的回调。若按回调逐帧上报，切换 Wi-Fi 时会先发出
+            // 一个方向相反的事件（实测：断开时先 Connect 再 Disconnect、连接时先
+            // Disconnect 再 Connect），把对侧任务误触发。
+            //
+            // 用 EdgeDetector 同时取代了原先「跳过 start 首帧」的标记：首帧只记录状态、
+            // 不上报，与 Windows 侧 InitialNotification=false 的意图一致，且不依赖
+            // 「start 恰好只投递一帧」这一假设。
+            let cb_edge = Arc::new(EdgeDetector::new());
             let cb = RcBlock::new(move |path: *mut c_void| {
                 if !cb_running.load(Ordering::Relaxed) {
                     return;
                 }
-                if cb_first.swap(false, Ordering::Relaxed) {
-                    return;
-                }
                 let status = unsafe { nw_path_get_status(path) };
-                let event = match status {
-                    NW_PATH_STATUS_SATISFIED => NetworkEvent::Connect {
+                let Some(connected) = status_to_connect_change(status, &cb_edge) else {
+                    return;
+                };
+                let event = if connected {
+                    NetworkEvent::Connect {
                         ssid: current_ssid(),
-                    },
-                    NW_PATH_STATUS_UNSATISFIED => NetworkEvent::Disconnect {
+                    }
+                } else {
+                    NetworkEvent::Disconnect {
                         ssid: current_ssid(),
-                    },
-                    _ => return, // Satisfiable / Invalid 等中间态不触发
+                    }
                 };
                 if !cb_debounce.allow(event.kind()) {
                     return;
@@ -280,6 +317,20 @@ mod platform_macos {
         }
     }
 
+    /// 把一次 path 回调的原始 status 映射为「是否已连接」，并做状态边沿检测。
+    ///
+    /// 返回 `Some(connected)` 表示该 status 相对上次观测**发生了变化**、应当上报；
+    /// 返回 `None` 表示不上报（首帧、重复快照、或 Satisfiable/Invalid 等中间态）。
+    ///
+    /// macOS 只有一个默认 path，故 EdgeDetector 的 key 固定为 0。
+    fn status_to_connect_change(status: i32, edge: &EdgeDetector<u8>) -> Option<bool> {
+        match status {
+            NW_PATH_STATUS_SATISFIED => edge.changed(0, true).then_some(true),
+            NW_PATH_STATUS_UNSATISFIED => edge.changed(0, false).then_some(false),
+            _ => None,
+        }
+    }
+
     fn current_ssid() -> Option<String> {
         // macOS 14+ 读取 SSID 需定位权限；无权限/有线时返回 None（触发器按任意网络匹配）
         unsafe {
@@ -318,11 +369,46 @@ mod platform_macos {
             }
         });
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 复刻实测日志（2026-09-19 02:40Z）里一次切换的原始 status 序列：
+        /// - 断开 Wi-Fi：[1(旧), 2(新), 2]  ← 首帧 1 来自启动时的快照
+        /// - 开 Wi-Fi：  [2(旧), 1(新), 1, 1]
+        ///
+        /// 期望：每次切换只上报**一个方向正确**的事件，不出现相反事件。
+        #[test]
+        fn transition_reports_only_the_new_status() {
+            let edge = EdgeDetector::new();
+            let mut reported = Vec::new();
+            for status in [1, 1, 2, 2, 1, 1, 1] {
+                if let Some(connected) = status_to_connect_change(status, &edge) {
+                    reported.push(connected);
+                }
+            }
+            // 只有「断开」与「重新连接」两次真实变化；不出现 1→2→1 的假事件
+            assert_eq!(reported, vec![false, true]);
+        }
+
+        #[test]
+        fn middle_states_and_repeats_do_not_report() {
+            let edge = EdgeDetector::new();
+            assert_eq!(status_to_connect_change(1, &edge), None); // 首帧只记录
+            assert_eq!(status_to_connect_change(3, &edge), None); // satisfiable 中间态
+            assert_eq!(status_to_connect_change(0, &edge), None); // invalid 中间态
+            assert_eq!(status_to_connect_change(1, &edge), None); // 状态未变
+            assert_eq!(status_to_connect_change(2, &edge), Some(false));
+            assert_eq!(status_to_connect_change(2, &edge), None); // 状态未变
+            assert_eq!(status_to_connect_change(1, &edge), Some(true));
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 mod platform_windows {
-    use super::{Debouncer, NetworkEvent};
+    use super::{Debouncer, EdgeDetector, NetworkEvent};
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
     use std::sync::Arc;
@@ -350,6 +436,8 @@ mod platform_windows {
         running: Arc<AtomicBool>,
         on_event: SendFn,
         debouncer: Arc<Debouncer>,
+        // 按接口 LUID 记录上一次观测到的连通性，避免重复/无关通知被误报成事件
+        edge: EdgeDetector<u64>,
         // 回调在系统线程触发，那里没有 Tokio 上下文，故在 start() 内取 Handle
         probe_handle: Option<tokio::runtime::Handle>,
     }
@@ -363,6 +451,7 @@ mod platform_windows {
                 running: Arc::new(AtomicBool::new(true)),
                 on_event: Arc::new(on_event),
                 debouncer: Arc::new(Debouncer::new()),
+                edge: EdgeDetector::new(),
                 probe_handle: tokio::runtime::Handle::try_current().ok(),
             });
 
@@ -410,18 +499,27 @@ mod platform_windows {
             Arc::from_raw(caller_context as *const WatcherState)
         });
         // MIB_IPINTERFACE_ROW 没有 OperStatus，只有 Connected（是否已连到网络接入点）。
-        // MibDeleteInstance = 接口行被移除；其余通知必须按 Connected 判定，
-        // 否则拔网线 / 禁用网卡（参数变更且 Connected=false）会被误报成 Connect。
         //
-        // 已知残留：接口仍连接时的纯参数变更（MTU / metric / DNS）Connected 仍为 true，
-        // 会误报一次 Connect。彻底消除需按 InterfaceLuid 维护状态迁移表，本次不做。
-        let connected = !row.is_null() && unsafe { (*row).Connected };
-        let event = if notification_type == MibDeleteInstance || !connected {
-            NetworkEvent::Disconnect { ssid: None }
+        // 与 macOS 同理，通知是在接口**任意**参数变化（MTU / metric / DNS / 地址）时
+        // 到达的，并非只在连通性变化时到达。这里按接口 LUID 做状态边沿检测，只在
+        // 连通性真正变化时才上报，避免接口仍连接时被纯参数变更误报成 Connect。
+        // MibDeleteInstance（接口行被移除）按已断开处理。
+        let key = if row.is_null() {
+            0u64
         } else {
+            unsafe { (*row).InterfaceLuid.Value }
+        };
+        let connected =
+            notification_type != MibDeleteInstance && !row.is_null() && unsafe { (*row).Connected };
+        if !state.edge.changed(key, connected) {
+            return;
+        }
+        let event = if connected {
             NetworkEvent::Connect {
                 ssid: query_current_ssid(),
             }
+        } else {
+            NetworkEvent::Disconnect { ssid: None }
         };
         emit(&state, event);
     }
@@ -594,6 +692,30 @@ mod tests {
         NetworkEvent::Connect {
             ssid: ssid.map(String::from),
         }
+    }
+
+    #[test]
+    fn edge_detector_reports_only_real_changes() {
+        let edge = EdgeDetector::new();
+        // 首帧只记录，不上报（启动时不产生事件）
+        assert!(!edge.changed(0u8, true));
+        // 同一状态的回调：不上报。这正是切换 Wi-Fi 时先发出「相反事件」的根因
+        assert!(!edge.changed(0u8, true));
+        // 真实变化才上报
+        assert!(edge.changed(0u8, false));
+        assert!(!edge.changed(0u8, false));
+        assert!(edge.changed(0u8, true));
+        assert!(!edge.changed(0u8, true));
+    }
+
+    #[test]
+    fn edge_detector_tracks_keys_independently() {
+        let edge: EdgeDetector<&str> = EdgeDetector::new();
+        assert!(!edge.changed("eth0", true));
+        assert!(!edge.changed("wlan0", true)); // 另一个接口首次出现：各自初始化
+        assert!(edge.changed("eth0", false)); // 只影响自己的 key
+        assert!(!edge.changed("wlan0", true));
+        assert!(!edge.changed("eth0", false));
     }
 
     #[test]
