@@ -1093,3 +1093,96 @@ async fn test_task_overview_ipc_reports_next_fire_and_last_run() {
         "never-executed task must report last_run = null"
     );
 }
+
+#[tokio::test]
+async fn test_trigger_reroll_ipc_success_and_errors() {
+    let (handler, sched_queue, _dir) = setup_test_agent_handler().await;
+
+    let task_id = TaskId::new();
+    let fuzzy_trigger_id = TriggerId::new();
+    let disabled_trigger_id = TriggerId::new();
+    let task = Task {
+        id: task_id,
+        name: "Reroll IPC Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![
+            Trigger {
+                id: fuzzy_trigger_id,
+                task_id,
+                enabled: true,
+                kind: TriggerKind::Fuzzy {
+                    period: easyjob_domain::trigger::FuzzyPeriod::Daily,
+                    window_start: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                    window_end: chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+                    timezone: "UTC".into(),
+                },
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            Trigger {
+                id: disabled_trigger_id,
+                task_id,
+                enabled: false,
+                kind: TriggerKind::Interval {
+                    interval_secs: 60,
+                    start_at: None,
+                },
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        ],
+        actions: vec![],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    let saved = handler
+        .handle_request(IpcRequest::new(
+            "task.save",
+            serde_json::json!({ "task": task }),
+        ))
+        .await;
+    assert!(saved.ok, "task.save failed: {:?}", saved.error);
+
+    let res = handler
+        .handle_request(IpcRequest::new(
+            "trigger.reroll",
+            serde_json::json!({ "task_id": task_id, "trigger_id": fuzzy_trigger_id }),
+        ))
+        .await;
+    assert!(res.ok, "trigger.reroll failed: {:?}", res.error);
+    let next_fire = res.data.unwrap()["next_fire_at"].clone();
+    assert!(
+        !next_fire.is_null(),
+        "daily fuzzy trigger must report a next fire time"
+    );
+    {
+        let queue = sched_queue.lock().await;
+        assert!(queue
+            .next_fire_by_trigger()
+            .contains_key(&(task_id, fuzzy_trigger_id)));
+    }
+
+    // 停用触发器 → 错误
+    let disabled = handler
+        .handle_request(IpcRequest::new(
+            "trigger.reroll",
+            serde_json::json!({ "task_id": task_id, "trigger_id": disabled_trigger_id }),
+        ))
+        .await;
+    assert!(!disabled.ok, "disabled trigger must be rejected");
+
+    // 未注册任务 → 错误
+    let unregistered = handler
+        .handle_request(IpcRequest::new(
+            "trigger.reroll",
+            serde_json::json!({ "task_id": TaskId::new(), "trigger_id": TriggerId::new() }),
+        ))
+        .await;
+    assert!(!unregistered.ok, "unregistered task must be rejected");
+}

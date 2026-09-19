@@ -1005,6 +1005,56 @@ impl RequestHandler for AgentRpcHandler {
                     )
                 }
             }
+            "trigger.reroll" => {
+                let task_id: TaskId = match serde_json::from_value(
+                    req.params.get("task_id").cloned().unwrap_or_default(),
+                ) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return IpcResponse::error(
+                            req.id,
+                            format!("Invalid task_id parameter: {}", e),
+                        )
+                    }
+                };
+                let trigger_id: TriggerId = match serde_json::from_value(
+                    req.params.get("trigger_id").cloned().unwrap_or_default(),
+                ) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return IpcResponse::error(
+                            req.id,
+                            format!("Invalid trigger_id parameter: {}", e),
+                        )
+                    }
+                };
+
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                if self
+                    .scheduler_tx
+                    .send(SchedulerCommand::RerollTrigger {
+                        task_id,
+                        trigger_id,
+                        reply: reply_tx,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return IpcResponse::error(req.id, "Scheduler is not running".to_string());
+                }
+
+                match reply_rx.await {
+                    Ok(Ok(next_fire_at)) => IpcResponse::success(
+                        req.id,
+                        serde_json::json!({ "next_fire_at": next_fire_at }),
+                    ),
+                    Ok(Err(message)) => IpcResponse::error(req.id, message),
+                    Err(_) => IpcResponse::error(
+                        req.id,
+                        "Scheduler dropped the reroll request".to_string(),
+                    ),
+                }
+            }
             _ => IpcResponse::error(req.id, format!("Method '{}' not found", req.method)),
         }
     }
