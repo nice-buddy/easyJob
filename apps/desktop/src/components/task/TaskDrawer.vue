@@ -3,7 +3,7 @@ export { getEmptyTask } from '../../types/task';
 </script>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   NDrawer,
   NDrawerContent,
@@ -27,6 +27,7 @@ import { useTaskStore } from '../../stores/taskStore';
 const props = defineProps<{
   show: boolean;
   task: Task | null;
+  mode?: 'create' | 'edit' | 'copy';
 }>();
 
 const emit = defineEmits<{
@@ -54,6 +55,13 @@ try {
 const isSaving = ref(false);
 const activeTab = ref('basic');
 const currentTask = ref<Task>(getEmptyTask());
+
+// 缺省时按既有行为从 task 真值推断，保证既有调用方不受影响
+const drawerTitle = computed(() => {
+  const resolved = props.mode ?? (props.task ? 'edit' : 'create');
+  if (resolved === 'copy') return '复制任务';
+  return resolved === 'edit' ? '编辑任务' : '新建任务';
+});
 
 watch(
   () => props.task,
@@ -172,7 +180,7 @@ async function handleSave() {
 
 <template>
   <NDrawer :show="show" width="620" @update:show="$emit('update:show', $event)">
-    <NDrawerContent :title="task ? '编辑任务' : '新建任务'" closable>
+    <NDrawerContent :title="drawerTitle" closable>
       <div class="pb-8">
         <NTabs v-model:value="activeTab" type="line" animated>
           <!-- Tab 1: Basic Info & Policy -->

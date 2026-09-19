@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { NButton, NInput, NSwitch, NTag, NEmpty, useMessage, useDialog } from 'naive-ui';
-import { Plus, Search, Play, Edit2, Trash2, Download, Upload } from 'lucide-vue-next';
+import { Plus, Search, Play, Edit2, Trash2, Download, Upload, Copy } from 'lucide-vue-next';
 import TaskDrawer from '../components/task/TaskDrawer.vue';
 import LiveLogDrawer from '../components/console/LiveLogDrawer.vue';
 import TaskExportModal from '../components/task/TaskExportModal.vue';
@@ -9,6 +9,7 @@ import TaskImportModal from '../components/task/TaskImportModal.vue';
 import { useTaskStore } from '../stores/taskStore';
 import { useExecutionStore } from '../stores/executionStore';
 import type { Task } from '../types/task';
+import { cloneTaskForDuplicate } from '../types/task';
 
 const emit = defineEmits<{
   (e: 'create-task'): void;
@@ -23,6 +24,7 @@ const showExportModal = ref(false);
 const showImportModal = ref(false);
 const selectedExecutionId = ref<string | null>(null);
 const editingTask = ref<Task | null>(null);
+const drawerMode = ref<'create' | 'edit' | 'copy'>('create');
 
 let message: { success: (msg: string) => void; error: (msg: string) => void };
 try {
@@ -43,18 +45,28 @@ try {
 
 onMounted(() => {
   taskStore.loadTasks();
+  taskStore.initOverviewListener();
 });
 
 function openCreateDrawer() {
+  drawerMode.value = 'create';
   editingTask.value = null;
   showDrawer.value = true;
   emit('create-task');
 }
 
 function openEditDrawer(task: Task) {
+  drawerMode.value = 'edit';
   editingTask.value = JSON.parse(JSON.stringify(task));
   showDrawer.value = true;
   emit('edit-task', task);
+}
+
+// 深拷贝副本，点「保存任务」后才通过 task.save 落库；取消不产生任何数据
+function openCopyDrawer(task: Task) {
+  drawerMode.value = 'copy';
+  editingTask.value = cloneTaskForDuplicate(task);
+  showDrawer.value = true;
 }
 
 async function handleToggleEnabled(task: Task, enabled: boolean) {
@@ -213,6 +225,13 @@ async function handleDelete(task: Task) {
             编辑
           </NButton>
 
+          <NButton size="small" secondary @click="openCopyDrawer(task)">
+            <template #icon>
+              <Copy class="w-3.5 h-3.5 text-slate-500" />
+            </template>
+            复制
+          </NButton>
+
           <NButton size="small" secondary type="error" @click="handleDelete(task)">
             <template #icon>
               <Trash2 class="w-3.5 h-3.5" />
@@ -226,6 +245,7 @@ async function handleDelete(task: Task) {
     <TaskDrawer
       v-model:show="showDrawer"
       :task="editingTask"
+      :mode="drawerMode"
       @saved="taskStore.loadTasks()"
     />
 

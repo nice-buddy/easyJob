@@ -16,6 +16,8 @@ vi.mock('../src/services/tauri', () => ({
   saveTask: vi.fn(),
   deleteTask: vi.fn(),
   triggerTask: vi.fn(),
+  getTaskOverview: vi.fn().mockResolvedValue([]),
+  rerollTrigger: vi.fn(),
 }));
 
 describe('TaskDrawer, TriggerEditor & ActionEditor', () => {
@@ -59,6 +61,7 @@ describe('TaskDrawer, TriggerEditor & ActionEditor', () => {
       expect(props).toBeDefined();
       expect(props.show).toBeDefined();
       expect(props.task).toBeDefined();
+      expect((TaskDrawer as any).props.mode).toBeDefined();
 
       const emits = (TaskDrawer as any).emits;
       expect(emits).toBeDefined();

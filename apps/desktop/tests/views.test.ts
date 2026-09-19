@@ -39,6 +39,8 @@ vi.mock('../src/services/tauri', () => ({
   listExecutions: vi.fn(),
   getExecution: vi.fn(),
   cancelExecution: vi.fn(),
+  getTaskOverview: vi.fn().mockResolvedValue([]),
+  rerollTrigger: vi.fn(),
 }));
 
 vi.mock('../src/services/events', () => ({

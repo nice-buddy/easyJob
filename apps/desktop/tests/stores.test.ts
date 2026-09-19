@@ -21,6 +21,8 @@ vi.mock('../src/services/tauri', () => ({
   getExecution: vi.fn(),
   cancelExecution: vi.fn(),
   getExecutionOutput: vi.fn().mockResolvedValue([]),
+  getTaskOverview: vi.fn().mockResolvedValue([]),
+  rerollTrigger: vi.fn(),
 }));
 
 vi.mock('../src/services/events', () => ({
@@ -245,6 +247,57 @@ describe('Pinia Stores', () => {
       const result = await store.triggerTask('task-1');
       expect(tauriService.triggerTask).toHaveBeenCalledWith('task-1');
       expect(result).toBe(true);
+    });
+
+    it('loads schedule overview and updates a single trigger in place after reroll', async () => {
+      const store = useTaskStore();
+      vi.mocked(tauriService.getTaskOverview).mockResolvedValueOnce([
+        {
+          task_id: 'task-1',
+          triggers: [{ trigger_id: 'trig-1', next_fire_at: '2026-09-19T09:00:00Z' }],
+          last_run: null,
+        },
+      ]);
+
+      await store.loadOverview();
+      expect(store.scheduleOverview['task-1'].triggers).toHaveLength(1);
+
+      vi.mocked(tauriService.rerollTrigger).mockResolvedValueOnce({
+        next_fire_at: '2026-09-19T09:37:00Z',
+      });
+      const updated = await store.rerollTrigger('task-1', 'trig-1');
+
+      expect(updated).toBe('2026-09-19T09:37:00Z');
+      expect(store.scheduleOverview['task-1'].triggers[0].next_fire_at).toBe(
+        '2026-09-19T09:37:00Z'
+      );
+      expect(tauriService.rerollTrigger).toHaveBeenCalledWith('task-1', 'trig-1');
+    });
+
+    it('silently degrades when the overview IPC fails', async () => {
+      const store = useTaskStore();
+      vi.mocked(tauriService.getTaskOverview).mockRejectedValueOnce(new Error('agent offline'));
+
+      await expect(store.loadOverview()).resolves.toBeUndefined();
+
+      expect(store.scheduleOverview).toEqual({});
+    });
+
+    it('refreshes the overview after an execution finished event', async () => {
+      let finishedCallback: ((payload: unknown) => void) | undefined;
+      vi.mocked(eventsService.onExecutionFinished).mockImplementation(async (cb) => {
+        finishedCallback = cb as (payload: unknown) => void;
+        return vi.fn();
+      });
+      vi.mocked(tauriService.getTaskOverview).mockResolvedValue([]);
+
+      const store = useTaskStore();
+      await store.initOverviewListener();
+      expect(eventsService.onExecutionFinished).toHaveBeenCalledTimes(1);
+
+      finishedCallback!({ execution_id: 'exec-1', task_id: 'task-1', status: 'Succeeded', exit_code: 0 });
+      await Promise.resolve();
+      expect(tauriService.getTaskOverview).toHaveBeenCalledTimes(1);
     });
   });
 
