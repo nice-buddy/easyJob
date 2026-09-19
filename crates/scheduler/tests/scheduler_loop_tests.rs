@@ -1,14 +1,15 @@
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, NaiveTime, Utc};
 use easyjob_common::{TaskId, TriggerId};
 use easyjob_domain::action::{Action, ActionKind};
 use easyjob_domain::policy::{
     ConcurrencyPolicy, ExecutionPolicy, MissedRunPolicy, RetryPolicy, TaskNotificationPolicy,
 };
 use easyjob_domain::task::Task;
-use easyjob_domain::trigger::{Trigger, TriggerKind};
+use easyjob_domain::trigger::{FuzzyPeriod, Trigger, TriggerKind};
 use easyjob_scheduler::queue::{ScheduleQueue, ScheduledItem};
 use easyjob_scheduler::scheduler::{Scheduler, SchedulerCommand, TriggerEvent};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[test]
@@ -563,6 +564,179 @@ async fn test_scheduler_interval_trigger_reschedules_multiple_events() {
     assert_eq!(event2.trigger_id, Some(trigger_id));
 
     // Clean shutdown
+    scheduler
+        .sender()
+        .send(SchedulerCommand::Shutdown)
+        .await
+        .unwrap();
+    handle.await.unwrap();
+}
+
+fn task_with_triggers(task_id: TaskId, triggers: Vec<Trigger>) -> Task {
+    Task {
+        id: task_id,
+        name: "Reroll Test Task".to_string(),
+        description: None,
+        enabled: true,
+        triggers,
+        actions: vec![],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+async fn reroll(
+    scheduler: &Scheduler,
+    task_id: TaskId,
+    trigger_id: TriggerId,
+) -> std::result::Result<Option<DateTime<Utc>>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    scheduler
+        .sender()
+        .send(SchedulerCommand::RerollTrigger {
+            task_id,
+            trigger_id,
+            reply: tx,
+        })
+        .await
+        .unwrap();
+    rx.await.unwrap()
+}
+
+async fn read_next_fire(
+    queue: &Arc<tokio::sync::Mutex<ScheduleQueue>>,
+    key: (TaskId, TriggerId),
+) -> Option<DateTime<Utc>> {
+    let q = queue.lock().await;
+    q.next_fire_by_trigger().get(&key).copied()
+}
+
+#[tokio::test]
+async fn test_reroll_trigger_rerolls_only_target_and_keeps_other_triggers() {
+    let (event_tx, _event_rx) = mpsc::channel(10);
+    let (scheduler, cmd_rx) = Scheduler::new(event_tx.clone());
+    let queue = scheduler.queue();
+    let handle = tokio::spawn(Scheduler::run(queue.clone(), cmd_rx, event_tx));
+
+    let task_id = TaskId::new();
+    let fuzzy_id = TriggerId::new();
+    let interval_id = TriggerId::new();
+
+    let fuzzy = Trigger {
+        id: fuzzy_id,
+        task_id,
+        enabled: true,
+        kind: TriggerKind::Fuzzy {
+            period: FuzzyPeriod::Daily,
+            window_start: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            window_end: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            timezone: "UTC".into(),
+        },
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    let interval = Trigger {
+        id: interval_id,
+        task_id,
+        enabled: true,
+        kind: TriggerKind::Interval {
+            interval_secs: 3600,
+            start_at: None,
+        },
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+
+    scheduler
+        .sender()
+        .send(SchedulerCommand::add_task(task_with_triggers(
+            task_id,
+            vec![fuzzy, interval],
+        )))
+        .await
+        .unwrap();
+
+    // 第一次重摇的回执返回时，AddTask 必已被调度循环处理，可直接作为基线
+    let fuzzy_baseline = reroll(&scheduler, task_id, fuzzy_id)
+        .await
+        .expect("reroll should succeed")
+        .expect("daily fuzzy trigger always has a next occurrence");
+    let interval_baseline = read_next_fire(&queue, (task_id, interval_id))
+        .await
+        .expect("interval trigger must be enqueued");
+
+    let mut seen_different = false;
+    for _ in 0..30 {
+        let next = reroll(&scheduler, task_id, fuzzy_id)
+            .await
+            .expect("reroll should succeed")
+            .expect("daily fuzzy trigger always has a next occurrence");
+        if next != fuzzy_baseline {
+            seen_different = true;
+        }
+        // 回归防护：同任务其它触发器的下次时间必须完全不变（复用 add_task 会把它推后）
+        assert_eq!(
+            read_next_fire(&queue, (task_id, interval_id)).await,
+            Some(interval_baseline),
+            "rerolling one trigger must not reschedule the other trigger"
+        );
+        // 不应累积或丢失条目
+        assert_eq!(queue.lock().await.len(), 2);
+    }
+    assert!(
+        seen_different,
+        "30 次重摇都没有改变 Fuzzy 的随机点，说明重摇没有真正重新求值"
+    );
+
+    scheduler
+        .sender()
+        .send(SchedulerCommand::Shutdown)
+        .await
+        .unwrap();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_reroll_trigger_rejects_unregistered_task_and_disabled_trigger() {
+    let (event_tx, _event_rx) = mpsc::channel(10);
+    let (scheduler, cmd_rx) = Scheduler::new(event_tx.clone());
+    let queue = scheduler.queue();
+    let handle = tokio::spawn(Scheduler::run(queue, cmd_rx, event_tx));
+
+    // 未注册任务
+    let result = reroll(&scheduler, TaskId::new(), TriggerId::new()).await;
+    assert!(result.is_err(), "unregistered task must be rejected");
+
+    // 已注册任务但触发器停用（mpsc 保序，AddTask 必先于 RerollTrigger 被处理）
+    let task_id = TaskId::new();
+    let disabled_trigger_id = TriggerId::new();
+    let task = task_with_triggers(
+        task_id,
+        vec![Trigger {
+            id: disabled_trigger_id,
+            task_id,
+            enabled: false,
+            kind: TriggerKind::Interval {
+                interval_secs: 60,
+                start_at: None,
+            },
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }],
+    );
+    scheduler
+        .sender()
+        .send(SchedulerCommand::add_task(task))
+        .await
+        .unwrap();
+
+    let result = reroll(&scheduler, task_id, disabled_trigger_id).await;
+    assert!(result.is_err(), "disabled trigger must be rejected");
+
     scheduler
         .sender()
         .send(SchedulerCommand::Shutdown)

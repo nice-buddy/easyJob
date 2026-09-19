@@ -10,11 +10,21 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+/// 重摇回执：`Ok(Some(next))` 表示新的下次触发时间，`Ok(None)` 表示该触发器不再有下一次。
+/// `Err(原因)` 表示任务未注册到调度器、任务或触发器已停用、或触发器不存在。
+pub type RerollReply =
+    tokio::sync::oneshot::Sender<std::result::Result<Option<DateTime<Utc>>, String>>;
+
 #[derive(Debug)]
 pub enum SchedulerCommand {
     AddTask(Box<Task>),
     RemoveTask(TaskId),
     TriggerNow(TaskId),
+    RerollTrigger {
+        task_id: TaskId,
+        trigger_id: TriggerId,
+        reply: RerollReply,
+    },
     Shutdown,
 }
 
@@ -128,6 +138,12 @@ impl Scheduler {
                                 scheduled_at: Utc::now(),
                             }).await;
                         }
+                        Some(SchedulerCommand::RerollTrigger { task_id, trigger_id, reply }) => {
+                            let result =
+                                reroll_trigger(&queue, &registered_tasks, task_id, trigger_id)
+                                    .await;
+                            let _ = reply.send(result);
+                        }
                     }
                 }
                 _ = tokio::time::sleep(sleep_duration), if next_deadline.is_some() => {
@@ -194,4 +210,77 @@ impl Scheduler {
             }
         }
     }
+}
+
+/// 只重排目标触发器：目标触发器以 `now` 重新求值（Fuzzy 因此得到新的随机点），
+/// 同一任务其它触发器的 `next_fire_at` 保持原值。
+///
+/// 实现要点：先按旧的当前 generation 过滤出该任务真正有效的条目，再 `bump_generation`
+/// 让残留条目失效，最后按新 generation 重新入队。绝不复用 `add_task`
+/// （那会以 `now` 为基准重算同任务的 Interval 触发器，把它的下次时间推后）。
+async fn reroll_trigger(
+    queue: &Arc<Mutex<ScheduleQueue>>,
+    registered_tasks: &HashMap<TaskId, Box<Task>>,
+    task_id: TaskId,
+    trigger_id: TriggerId,
+) -> std::result::Result<Option<DateTime<Utc>>, String> {
+    let Some(task) = registered_tasks.get(&task_id) else {
+        return Err(format!(
+            "Task '{}' is not registered to the scheduler",
+            task_id
+        ));
+    };
+    if !task.enabled {
+        return Err(format!("Task '{}' is disabled", task_id));
+    }
+    let Some(trigger) = task.triggers.iter().find(|t| t.id == trigger_id) else {
+        return Err(format!(
+            "Trigger '{}' not found in task '{}'",
+            trigger_id, task_id
+        ));
+    };
+    if !trigger.enabled {
+        return Err(format!("Trigger '{}' is disabled", trigger_id));
+    }
+
+    let mut q = queue.lock().await;
+    let old_generation = q.current_generation(&task_id);
+    let valid_items: Vec<ScheduledItem> = q
+        .take_task_items(&task_id)
+        .into_iter()
+        .filter(|item| item.generation == old_generation)
+        .collect();
+    let new_generation = q.bump_generation(&task_id);
+
+    let mut target_rerolled = false;
+    let mut new_next: Option<DateTime<Utc>> = None;
+    for mut item in valid_items {
+        if item.trigger_id == trigger_id {
+            target_rerolled = true;
+            match evaluate_next_occurrence(&trigger.kind, Utc::now()) {
+                Some(next) => {
+                    item.next_fire_at = next;
+                    new_next = Some(next);
+                }
+                None => continue,
+            }
+        }
+        item.generation = new_generation;
+        q.push(item);
+    }
+
+    // 目标触发器原本不在队列中（例如 Network、已过期的 Once）：求值一次后按需入队
+    if !target_rerolled {
+        if let Some(next) = evaluate_next_occurrence(&trigger.kind, Utc::now()) {
+            q.push(ScheduledItem {
+                task_id,
+                trigger_id,
+                next_fire_at: next,
+                generation: new_generation,
+            });
+            new_next = Some(next);
+        }
+    }
+
+    Ok(new_next)
 }
