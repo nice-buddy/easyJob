@@ -465,6 +465,44 @@ export function getEmptyTask(): Task {
   };
 }
 
+function newLocalId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'id-' + Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+}
+
+/**
+ * 生成用于「任务复制」的深拷贝副本：
+ * 新 id、名称加 ` - 副本`、enabled 固定为 false（副本默认停用）、version 重置为 1、
+ * created_at / updated_at 为 now；重建 triggers / actions 的 id 并让 task_id 指向新任务；
+ * 其余字段与原任务一致。绝不在原任务对象上做任何写入。
+ */
+export function cloneTaskForDuplicate(task: Task, now: Date = new Date()): Task {
+  const cloned = JSON.parse(JSON.stringify(task)) as Task;
+  const id = newLocalId();
+  const timestamp = now.toISOString();
+
+  cloned.id = id;
+  cloned.name = `${task.name} - 副本`;
+  cloned.enabled = false;
+  cloned.version = 1;
+  cloned.created_at = timestamp;
+  cloned.updated_at = timestamp;
+  cloned.triggers = (cloned.triggers ?? []).map((trigger) => ({
+    ...trigger,
+    id: newLocalId(),
+    task_id: id,
+  }));
+  cloned.actions = (cloned.actions ?? []).map((action) => ({
+    ...action,
+    id: newLocalId(),
+    task_id: id,
+  }));
+
+  return cloned;
+}
+
 export function parseDate(iso?: string | null): number | null {
   if (!iso) return null;
   const time = Date.parse(iso);
