@@ -95,4 +95,146 @@ impl ScheduleQueue {
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }
+
+    /// 返回每个触发器的下次触发时间，只统计当前 generation 有效的条目。
+    /// 同一触发器存在多条有效条目时取最早的一条。
+    pub fn next_fire_by_trigger(&self) -> HashMap<(TaskId, TriggerId), DateTime<Utc>> {
+        let mut result: HashMap<(TaskId, TriggerId), DateTime<Utc>> = HashMap::new();
+        for item in self.heap.iter() {
+            if !self.is_valid(item) {
+                continue;
+            }
+            let key = (item.task_id, item.trigger_id);
+            match result.get_mut(&key) {
+                Some(existing) => {
+                    if item.next_fire_at < *existing {
+                        *existing = item.next_fire_at;
+                    }
+                }
+                None => {
+                    result.insert(key, item.next_fire_at);
+                }
+            }
+        }
+        result
+    }
+
+    /// 取出某任务的全部条目（其余任务的条目保留在堆中），供重摇后按新 generation 重新入队。
+    pub fn take_task_items(&mut self, task_id: &TaskId) -> Vec<ScheduledItem> {
+        let heap = std::mem::take(&mut self.heap);
+        let mut taken = Vec::new();
+        let mut kept = BinaryHeap::new();
+        for item in heap {
+            if item.task_id == *task_id {
+                taken.push(item);
+            } else {
+                kept.push(item);
+            }
+        }
+        self.heap = kept;
+        taken
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn base() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn next_fire_by_trigger_returns_earliest_valid_entry_per_trigger() {
+        let mut queue = ScheduleQueue::new();
+        let task_a = TaskId::new();
+        let task_b = TaskId::new();
+        let trigger_x = TriggerId::new();
+        let trigger_y = TriggerId::new();
+        let t = base();
+        let mk =
+            |task_id: TaskId, trigger_id: TriggerId, offset: i64, generation: u64| ScheduledItem {
+                task_id,
+                trigger_id,
+                next_fire_at: t + Duration::seconds(offset),
+                generation,
+            };
+
+        // 同一触发器两条有效条目 → 取最早的一条
+        queue.push(mk(task_a, trigger_x, 60, 1));
+        queue.push(mk(task_a, trigger_x, 30, 1));
+        // 同任务的另一个触发器
+        queue.push(mk(task_a, trigger_y, 120, 1));
+        // 另一个任务
+        queue.push(mk(task_b, trigger_x, 10, 1));
+
+        let map = queue.next_fire_by_trigger();
+        assert_eq!(map.len(), 3);
+        assert_eq!(map[&(task_a, trigger_x)], t + Duration::seconds(30));
+        assert_eq!(map[&(task_a, trigger_y)], t + Duration::seconds(120));
+        assert_eq!(map[&(task_b, trigger_x)], t + Duration::seconds(10));
+    }
+
+    #[test]
+    fn next_fire_by_trigger_ignores_stale_generation() {
+        let mut queue = ScheduleQueue::new();
+        let task_id = TaskId::new();
+        let trigger_id = TriggerId::new();
+        let t = base();
+
+        queue.push(ScheduledItem {
+            task_id,
+            trigger_id,
+            next_fire_at: t + Duration::seconds(5),
+            generation: 1,
+        });
+        queue.bump_generation(&task_id); // 旧条目失效
+        queue.push(ScheduledItem {
+            task_id,
+            trigger_id,
+            next_fire_at: t + Duration::seconds(90),
+            generation: 2,
+        });
+
+        let map = queue.next_fire_by_trigger();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&(task_id, trigger_id)], t + Duration::seconds(90));
+    }
+
+    #[test]
+    fn take_task_items_removes_only_target_task_and_keeps_others() {
+        let mut queue = ScheduleQueue::new();
+        let task_a = TaskId::new();
+        let task_b = TaskId::new();
+        let t = base();
+
+        queue.push(ScheduledItem {
+            task_id: task_a,
+            trigger_id: TriggerId::new(),
+            next_fire_at: t + Duration::seconds(1),
+            generation: 1,
+        });
+        queue.push(ScheduledItem {
+            task_id: task_a,
+            trigger_id: TriggerId::new(),
+            next_fire_at: t + Duration::seconds(2),
+            generation: 1,
+        });
+        queue.push(ScheduledItem {
+            task_id: task_b,
+            trigger_id: TriggerId::new(),
+            next_fire_at: t + Duration::seconds(3),
+            generation: 1,
+        });
+
+        let taken = queue.take_task_items(&task_a);
+        assert_eq!(taken.len(), 2);
+        assert!(taken.iter().all(|item| item.task_id == task_a));
+        assert_eq!(queue.len(), 1);
+        let remaining = queue.peek().expect("task_b item remains");
+        assert_eq!(remaining.task_id, task_b);
+    }
 }
