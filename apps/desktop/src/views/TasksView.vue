@@ -9,7 +9,7 @@ import TaskImportModal from '../components/task/TaskImportModal.vue';
 import { useTaskStore } from '../stores/taskStore';
 import { useExecutionStore } from '../stores/executionStore';
 import type { Task, Trigger } from '../types/task';
-import { cloneTaskForDuplicate, describeTriggerShort, formatDateTimeShort, formatDateTimeTitle, getTriggerType } from '../types/task';
+import { cloneTaskForDuplicate, describeTriggerShort, formatDateTimeShort, formatDateTimeTitle, getTriggerType, parseDate } from '../types/task';
 import { getStatusLabel } from '../types/execution';
 
 const emit = defineEmits<{
@@ -136,18 +136,46 @@ function triggerNextFire(taskId: string, triggerId: string): string | null {
   return entry?.triggers.find((trigger) => trigger.trigger_id === triggerId)?.next_fire_at ?? null;
 }
 
-function nextFireText(taskId: string, triggerId: string): string {
-  const iso = triggerNextFire(taskId, triggerId);
-  return iso ? formatDateTimeShort(iso) : '—';
-}
-
-function nextFireTitle(taskId: string, triggerId: string): string {
-  const iso = triggerNextFire(taskId, triggerId);
-  return iso ? formatDateTimeTitle(iso) : '当前没有排定的下次触发时间';
+// 事件类触发器由事件驱动（网络变动 / agent 启动），后端永远算不出下次时间
+function isEventTrigger(trigger: Trigger): boolean {
+  const type = getTriggerType(trigger.kind);
+  return type === 'Network' || type === 'AgentStarted';
 }
 
 function isFuzzyTrigger(trigger: Trigger): boolean {
   return getTriggerType(trigger.kind) === 'Fuzzy';
+}
+
+function schedulableTriggers(task: Task): Trigger[] {
+  return task.triggers.filter((trigger) => !isEventTrigger(trigger));
+}
+
+// 多个触发器时只关心最近的一次；没有任何排定值（如已停用、已过期的单次）则返回 null
+function nearestNextFireIso(task: Task): string | null {
+  let nearestIso: string | null = null;
+  let nearestMs: number | null = null;
+  for (const trigger of schedulableTriggers(task)) {
+    const iso = triggerNextFire(task.id, trigger.id);
+    const ms = parseDate(iso);
+    if (ms === null) continue;
+    if (nearestMs === null || ms < nearestMs) {
+      nearestMs = ms;
+      nearestIso = iso;
+    }
+  }
+  return nearestIso;
+}
+
+// 返回 null 表示整个「下次」片段都不显示（该任务只有事件类触发器）
+function nextFireText(task: Task): string | null {
+  if (schedulableTriggers(task).length === 0) return null;
+  const iso = nearestNextFireIso(task);
+  return `下次 ${iso ? formatDateTimeShort(iso) : '—'}`;
+}
+
+function nextFireTitle(task: Task): string {
+  const iso = nearestNextFireIso(task);
+  return iso ? `下次 ${formatDateTimeTitle(iso)}` : '当前没有排定的下次触发时间';
 }
 
 async function handleReroll(task: Task, trigger: Trigger) {
@@ -162,27 +190,10 @@ async function handleReroll(task: Task, trigger: Trigger) {
   }
 }
 
-function formatDuration(durationMs: number | null): string {
-  if (durationMs === null || durationMs === undefined) return '';
-  const secs = durationMs / 1000;
-  return secs < 60 ? `${secs.toFixed(1)}s` : `${Math.round(secs)}s`;
-}
-
-function errSummary(err: string): string {
-  const oneLine = err.replace(/\s+/g, ' ').trim();
-  return oneLine.length > 60 ? `${oneLine.slice(0, 60)}…` : oneLine;
-}
-
 function lastRunText(taskId: string): string {
   const lastRun = taskStore.scheduleOverview[taskId]?.last_run;
   if (!lastRun) return '上次 —';
-  const base = `上次 ${formatDateTimeShort(lastRun.started_at)} ${getStatusLabel(lastRun.status)}`;
-  if (lastRun.status === 'Succeeded') {
-    const duration = formatDuration(lastRun.duration_ms);
-    return duration ? `${base} · ${duration}` : base;
-  }
-  const summary = lastRun.error_message ? errSummary(lastRun.error_message) : '';
-  return summary ? `${base} · ${summary}` : base;
+  return `上次 ${formatDateTimeShort(lastRun.started_at)} ${getStatusLabel(lastRun.status)}`;
 }
 
 function lastRunTitle(taskId: string): string {
@@ -271,33 +282,36 @@ function lastRunClass(taskId: string): string {
                 {{ task.actions.length }} 个动作
               </NTag>
             </div>
-            <p class="text-xs text-slate-500 dark:text-zinc-400 mt-1">
-              {{ task.description || '暂无描述' }}
-            </p>
             <div
-              v-for="trigger in task.triggers"
-              :key="trigger.id"
-              class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-400 mt-1"
+              v-if="task.triggers.length > 0"
+              class="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-400 mt-1"
             >
-              <span>{{ describeTriggerShort(trigger.kind) }}</span>
-              <span>→ 下次</span>
-              <span :title="nextFireTitle(task.id, trigger.id)">
-                {{ nextFireText(task.id, trigger.id) }}
-              </span>
-              <NButton
-                v-if="isFuzzyTrigger(trigger)"
-                size="tiny"
-                secondary
-                :loading="rerollingKey === `${task.id}:${trigger.id}`"
-                @click="handleReroll(task, trigger)"
-              >
-                <template #icon>
-                  <RefreshCw class="w-3 h-3" />
-                </template>
-              </NButton>
+              <template v-for="(trigger, index) in task.triggers" :key="trigger.id">
+                <span v-if="index > 0" class="text-slate-400 dark:text-zinc-600">·</span>
+                <span>{{ describeTriggerShort(trigger.kind) }}</span>
+                <NButton
+                  v-if="isFuzzyTrigger(trigger)"
+                  size="tiny"
+                  secondary
+                  :loading="rerollingKey === `${task.id}:${trigger.id}`"
+                  @click="handleReroll(task, trigger)"
+                >
+                  <template #icon>
+                    <RefreshCw class="w-3 h-3" />
+                  </template>
+                </NButton>
+              </template>
             </div>
-            <div class="text-xs mt-1" :class="lastRunClass(task.id)" :title="lastRunTitle(task.id)">
-              {{ lastRunText(task.id) }}
+            <div class="flex items-center gap-1.5 text-xs mt-1">
+              <span :class="lastRunClass(task.id)" :title="lastRunTitle(task.id)">
+                {{ lastRunText(task.id) }}
+              </span>
+              <template v-if="nextFireText(task)">
+                <span class="text-slate-400 dark:text-zinc-600">·</span>
+                <span class="text-slate-500 dark:text-zinc-400" :title="nextFireTitle(task)">
+                  {{ nextFireText(task) }}
+                </span>
+              </template>
             </div>
           </div>
         </div>
