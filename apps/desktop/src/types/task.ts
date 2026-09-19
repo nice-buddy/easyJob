@@ -394,7 +394,9 @@ export function describeTriggerShort(kind: TriggerKind): string {
   }
   if ('Cron' in k) {
     const expression = k.Cron?.expression;
-    if (typeof expression !== 'string') return TRIGGER_SHORT_FALLBACK;
+    if (typeof expression !== 'string' || expression.trim() === '') {
+      return TRIGGER_SHORT_FALLBACK;
+    }
     return describeCronShort(expression) ?? expression;
   }
   if ('Fuzzy' in k) {

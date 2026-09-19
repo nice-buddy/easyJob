@@ -69,6 +69,8 @@ describe('describeTriggerShort', () => {
       {},
       { Cron: {} },
       { Cron: { expression: 123 } },
+      { Cron: { expression: '' } },
+      { Cron: { expression: '   ' } },
       { Once: {} },
       { Daily: {} },
       { Weekly: {} },
