@@ -75,6 +75,7 @@ async function handleToggleEnabled(task: Task, enabled: boolean) {
     const updated = { ...task, enabled };
     await taskStore.saveTask(updated);
     task.enabled = enabled;
+    await taskStore.loadOverview();
     message.success(enabled ? '任务已启用' : '任务已禁用');
   } catch (e: any) {
     message.error('操作失败: ' + (e?.message || e));
