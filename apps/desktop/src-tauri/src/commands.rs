@@ -1,5 +1,5 @@
 use crate::agent_manager::AgentManager;
-use easyjob_common::{ExecutionId, TaskId};
+use easyjob_common::{ExecutionId, TaskId, TriggerId};
 use easyjob_domain::execution::Execution;
 use easyjob_domain::task::Task;
 use easyjob_domain::SystemSettings;
@@ -127,4 +127,25 @@ pub async fn save_system_settings(
         .call("settings.set", serde_json::json!({ "settings": settings }))
         .await?;
     serde_json::from_value(val).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn task_overview(
+    manager: State<'_, Arc<AgentManager>>,
+) -> Result<serde_json::Value, String> {
+    manager.call("task.overview", serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn reroll_trigger(
+    task_id: TaskId,
+    trigger_id: TriggerId,
+    manager: State<'_, Arc<AgentManager>>,
+) -> Result<serde_json::Value, String> {
+    manager
+        .call(
+            "trigger.reroll",
+            serde_json::json!({ "task_id": task_id, "trigger_id": trigger_id }),
+        )
+        .await
 }
