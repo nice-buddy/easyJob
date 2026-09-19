@@ -491,16 +491,12 @@ function formatIntervalPreview(sec: number): string {
           <p v-if="networkEventsInvalid(tr)" class="text-red-500 dark:text-red-400">请至少选择一个触发事件</p>
         </div>
 
-        <div>
-          <label class="block text-slate-500 dark:text-zinc-400 mb-1">网络名称（可选）</label>
-          <NInput
-            :value="tr.kind.Network.network_name ?? ''"
-            @update:value="tr.kind.Network.network_name = $event === '' ? null : $event"
-            placeholder="留空 = 任意网络；填写则精确匹配 WiFi 名称（区分大小写）"
-            size="small"
-            clearable
-          />
-        </div>
+        <!--
+          「网络名称（SSID）」过滤暂时隐藏：
+          macOS 14+ 读取 SSID 需要「定位服务」权限，未授权时后端恒拿到 None，
+          填了名称的触发器会永不匹配（静默不触发）。待处理权限申请后再恢复此输入框。
+          数据模型的 network_name 字段保持不动，以保证已存任务能正常反序列化。
+        -->
       </div>
     </div>
   </div>
