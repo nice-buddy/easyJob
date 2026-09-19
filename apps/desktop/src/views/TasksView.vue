@@ -231,30 +231,28 @@ function lastRunClass(taskId: string): string {
           </template>
         </NInput>
 
-        <NButton size="medium" secondary @click="showExportModal = true">
+        <NButton size="medium" secondary title="导出任务" @click="showExportModal = true">
           <template #icon>
             <Download class="w-4 h-4 text-slate-500" />
           </template>
-          导出任务
         </NButton>
 
-        <NButton size="medium" secondary @click="showImportModal = true">
+        <NButton size="medium" secondary title="导入任务" @click="showImportModal = true">
           <template #icon>
             <Upload class="w-4 h-4 text-slate-500" />
           </template>
-          导入任务
         </NButton>
 
         <NButton
           type="primary"
           size="medium"
+          title="新建任务"
           class="bg-emerald-600 hover:bg-emerald-500"
           @click="openCreateDrawer"
         >
           <template #icon>
             <Plus class="w-4 h-4" />
           </template>
-          新建任务
         </NButton>
       </div>
     </div>
@@ -317,28 +315,25 @@ function lastRunClass(taskId: string): string {
         </div>
 
         <div class="flex items-center gap-2">
-          <NButton size="small" secondary @click="handleTrigger(task)">
+          <NButton size="small" secondary title="立即执行" @click="handleTrigger(task)">
             <template #icon>
               <Play class="w-3.5 h-3.5 text-emerald-500" />
             </template>
-            立即执行
           </NButton>
 
-          <NButton size="small" secondary @click="openEditDrawer(task)">
+          <NButton size="small" secondary title="编辑" @click="openEditDrawer(task)">
             <template #icon>
               <Edit2 class="w-3.5 h-3.5 text-slate-500" />
             </template>
-            编辑
           </NButton>
 
-          <NButton size="small" secondary @click="openCopyDrawer(task)">
+          <NButton size="small" secondary title="复制" @click="openCopyDrawer(task)">
             <template #icon>
               <Copy class="w-3.5 h-3.5 text-slate-500" />
             </template>
-            复制
           </NButton>
 
-          <NButton size="small" secondary type="error" @click="handleDelete(task)">
+          <NButton size="small" secondary type="error" title="删除" @click="handleDelete(task)">
             <template #icon>
               <Trash2 class="w-3.5 h-3.5" />
             </template>
