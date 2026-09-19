@@ -772,3 +772,95 @@ async fn test_purge_expired_runs_and_cascade_outputs() {
         .unwrap()
         .is_some());
 }
+
+async fn create_run_at(
+    repo: &SqliteExecutionRepository,
+    task_id: TaskId,
+    started_at: chrono::DateTime<chrono::Utc>,
+    status: ExecutionStatus,
+) -> Execution {
+    let mut exec = Execution::new(task_id, None, Some(started_at));
+    exec.status = status;
+    exec.started_at = started_at;
+    exec.finished_at = Some(started_at + chrono::Duration::seconds(1));
+    exec.duration_ms = Some(1000);
+    repo.create_run(&exec).await.unwrap();
+    exec
+}
+
+#[tokio::test]
+async fn test_find_latest_run_per_task_returns_newest_per_task() {
+    let pool = setup_test_db().await;
+    let exec_repo = SqliteExecutionRepository::new(pool.clone());
+    let task_repo = SqliteTaskRepository::new(pool.clone());
+
+    let task_a = make_dummy_task("latest-a");
+    let task_b = make_dummy_task("latest-b");
+    let task_c = make_dummy_task("latest-c");
+    task_repo.save(&task_a).await.unwrap();
+    task_repo.save(&task_b).await.unwrap();
+    task_repo.save(&task_c).await.unwrap();
+
+    let base = chrono::Utc::now() - chrono::Duration::hours(3);
+    create_run_at(&exec_repo, task_a.id, base, ExecutionStatus::Succeeded).await;
+    let a_new = create_run_at(
+        &exec_repo,
+        task_a.id,
+        base + chrono::Duration::hours(1),
+        ExecutionStatus::Failed,
+    )
+    .await;
+    let b_only = create_run_at(&exec_repo, task_b.id, base, ExecutionStatus::Succeeded).await;
+
+    let result = exec_repo
+        .find_latest_run_per_task(&[task_a.id, task_b.id, task_c.id])
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 2, "无运行记录的 task_c 不应出现在结果中");
+    assert_eq!(result[&task_a.id].id, a_new.id);
+    assert_eq!(result[&task_a.id].status, ExecutionStatus::Failed);
+    assert_eq!(result[&task_b.id].id, b_only.id);
+    assert!(!result.contains_key(&task_c.id));
+
+    // 空入参不应构造非法 SQL
+    assert!(exec_repo
+        .find_latest_run_per_task(&[])
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_find_latest_run_per_task_tie_breaks_by_id_desc() {
+    let pool = setup_test_db().await;
+    let exec_repo = SqliteExecutionRepository::new(pool.clone());
+    let task_repo = SqliteTaskRepository::new(pool.clone());
+    let task = make_dummy_task("latest-tie");
+    task_repo.save(&task).await.unwrap();
+
+    let started_at = chrono::Utc::now() - chrono::Duration::hours(1);
+    let mut exec_a = Execution::new(task.id, None, Some(started_at));
+    exec_a.status = ExecutionStatus::Succeeded;
+    exec_a.started_at = started_at;
+    let mut exec_b = Execution::new(task.id, None, Some(started_at));
+    exec_b.status = ExecutionStatus::Failed;
+    exec_b.started_at = started_at;
+
+    // 让 id 字符串较大的那条后插入，确保「取较大 id」不是插入顺序导致的
+    let (first, second, expected_status) = if exec_a.id.to_string() < exec_b.id.to_string() {
+        (exec_a, exec_b, ExecutionStatus::Failed)
+    } else {
+        (exec_b, exec_a, ExecutionStatus::Succeeded)
+    };
+    let expected_id = second.id;
+    exec_repo.create_run(&first).await.unwrap();
+    exec_repo.create_run(&second).await.unwrap();
+
+    let result = exec_repo
+        .find_latest_run_per_task(&[task.id])
+        .await
+        .unwrap();
+    assert_eq!(result[&task.id].id, expected_id);
+    assert_eq!(result[&task.id].status, expected_status);
+}

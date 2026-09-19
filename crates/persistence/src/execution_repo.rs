@@ -3,6 +3,7 @@ use chrono::Utc;
 use easyjob_common::{Error, ExecutionId, Result, TaskId, TriggerId};
 use easyjob_domain::execution::{Execution, ExecutionStatus};
 use sqlx::{Row, SqlitePool};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionOutputRecord {
@@ -24,6 +25,11 @@ pub trait ExecutionRepository: Send + Sync {
         task_id: &TaskId,
         before: chrono::DateTime<Utc>,
     ) -> Result<u64>;
+    /// 批量查询每个任务最近一次执行（无运行记录的任务不会出现在结果中）。
+    async fn find_latest_run_per_task(
+        &self,
+        task_ids: &[TaskId],
+    ) -> Result<HashMap<TaskId, Execution>>;
 }
 
 pub struct SqliteExecutionRepository {
@@ -160,6 +166,43 @@ impl ExecutionRepository for SqliteExecutionRepository {
         .map_err(|e| Error::Database(e.to_string()))?;
 
         Ok(result.rows_affected())
+    }
+
+    async fn find_latest_run_per_task(
+        &self,
+        task_ids: &[TaskId],
+    ) -> Result<HashMap<TaskId, Execution>> {
+        if task_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let placeholders = vec!["?"; task_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT * FROM (
+                 SELECT *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY task_id ORDER BY started_at DESC, id DESC
+                        ) AS row_num
+                 FROM task_runs
+                 WHERE task_id IN ({placeholders})
+             ) WHERE row_num = 1"
+        );
+
+        let mut query = sqlx::query(&sql);
+        for id in task_ids {
+            query = query.bind(id.to_string());
+        }
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let mut latest = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let exec = map_row_to_execution(row)?;
+            latest.insert(exec.task_id, exec);
+        }
+        Ok(latest)
     }
 }
 
