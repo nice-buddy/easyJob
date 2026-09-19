@@ -65,8 +65,14 @@ pub fn take_task_items(&mut self, task_id: &TaskId) -> Vec<ScheduledItem>;
 新增命令，用于「只重摇一个触发器」：
 
 ```rust
-SchedulerCommand::RerollTrigger { task_id: TaskId, trigger_id: TriggerId }
+SchedulerCommand::RerollTrigger {
+    task_id: TaskId,
+    trigger_id: TriggerId,
+    reply: tokio::sync::oneshot::Sender<Result<Option<DateTime<Utc>>, String>>,
+}
 ```
+
+`reply` 通道是必需的：§7 要求「任务未注册到调度器 / 触发器已停用」时把错误回给调用方，而这个状态只存在于 `Scheduler::run` 的局部 `registered_tasks` 中；同时 `trigger.reroll` 需要同步返回新的 `next_fire_at`，单向 `mpsc` 无法做到。
 
 处理语义（**必须保证**）：
 1. 目标触发器用 `now` 重新求值（Fuzzy 因此得到新的随机点）。
@@ -109,7 +115,7 @@ SQL 用窗口函数取每个 `task_id` 的 `started_at` 最新一行（SQLite �
 - `next_fire_at` 为 `null` 表示当前队列中没有该触发器的有效条目（Network 事件触发、已过期的 Once、任务或触发器被停用）。
 - `last_run` 为 `null` 表示从未执行过。
 - 只返回任务已存在的触发器；`task.list` 里没有的任务不会出现。
-- 读不到队列锁或查询失败时返回错误（见 §7）。
+- 读任务或执行记录失败时返回错误（见 §7）。
 
 **`trigger.reroll`**（params `{ "task_id": "...", "trigger_id": "..." }`）
 
@@ -166,7 +172,7 @@ export function describeTriggerShort(kind: TriggerKind): string;
 | Cron `0 9 * * 1-5` | `工作日 09:00` |
 | Cron 其它/复杂表达式 | 回退为原表达式 |
 | Fuzzy Daily 09:00-10:00 | `每天 09:00-10:00 之间随机` |
-| Fuzzy Weekly | `每周一/周五 09:00-10:00 之间随机` |
+| Fuzzy Weekly | `每周一、周五 09:00-10:00 之间随机` |
 | Network Connect | `连接网络时` |
 | Once | `单次 09-19 14:30` |
 | AgentStarted | `启动时` |
@@ -221,7 +227,7 @@ export function describeTriggerShort(kind: TriggerKind): string;
 
 ## 9. 明确不做（YAGNI）
 
-- 不持久化 `next_fire_at`，不加 migration。
+- 不持久化 `next_fire_at`（**不为它加列、不做相关 migration**）；§5.3 的 `(task_id, started_at)` 复合索引 migration 不在此列，仍需新增。
 - 不实现完整 cron 中文渲染器（只做常见模式 + 回退）。
 - 不做「错过的执行补跑」（`MissedRunPolicy` 仍未被 scheduler 消费，属既有遗留）。
 - 列表里不做跳到执行日志的入口（只显示结果文本）。
