@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的版本号（可带或不带 v 前缀，如 1.0.2）；手动触发时必填"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -70,7 +75,12 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            TAG="v__VERSION__"
+            INPUT="${{ inputs.version }}"
+            if [[ -z "${INPUT}" ]]; then
+              echo "::error::手动触发必须填写 version，例如 1.0.2"
+              exit 1
+            fi
+            TAG="v${INPUT#v}"
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "number=${TAG#v}" >> "$GITHUB_OUTPUT"
