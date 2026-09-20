@@ -1,6 +1,6 @@
 [package]
 name = "easyjob-desktop"
-version = "0.1.0"
+version = "1.0.1"
 description = "easyJob Desktop Task Scheduler"
 authors = ["easyJob Team"]
 edition = "2021"
@@ -24,6 +24,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+open = "5.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -33,4 +34,3 @@ notify-rust = "4.11"
 tempfile = "3"
 async-trait = { workspace = true }
 chrono = { workspace = true }
-

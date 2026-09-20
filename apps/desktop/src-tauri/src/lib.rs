@@ -107,6 +107,7 @@ pub fn run() {
             save_system_settings,
             task_overview,
             reroll_trigger,
+            open_external_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building easyJob desktop")

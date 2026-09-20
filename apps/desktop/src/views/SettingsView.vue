@@ -9,10 +9,13 @@ import {
   NSwitch,
   NSelect,
   NInputNumber,
+  NTag,
   useMessage,
 } from 'naive-ui';
+import { getVersion } from '@tauri-apps/api/app';
 import { setAutostart, initAutostartDefault } from '../services/autostart';
-import { restartAgent, getSystemSettings, saveSystemSettings } from '../services/tauri';
+import { restartAgent, getSystemSettings, saveSystemSettings, openExternalUrl } from '../services/tauri';
+import { checkForUpdate } from '../services/update';
 import type { SystemSettings } from '../types/task';
 
 const agentStore = useAgentStore();
@@ -25,6 +28,17 @@ const restartingAgent = ref(false);
 const settingsLoading = ref(false);
 const retentionPreset = ref<string>('7');
 const customDays = ref<number>(7);
+
+const appVersion = ref('-');
+const checkingUpdate = ref(false);
+const updateChecked = ref(false);
+const noReleases = ref(false);
+const hasUpdate = ref(false);
+const latestVersion = ref('');
+const releaseNotes = ref('');
+const releaseUrl = ref('');
+const releasePublishedAt = ref('');
+const updateError = ref('');
 
 const retentionPresetOptions = [
   { label: '保留 3 天', value: '3' },
@@ -59,6 +73,13 @@ onMounted(async () => {
   } catch (e) {
     console.error('Failed to load system settings:', e);
   }
+
+  try {
+    appVersion.value = await getVersion();
+  } catch (e) {
+    console.error('Failed to get app version:', e);
+  }
+  await handleCheckUpdate(true);
 });
 
 async function handleSaveRetentionSettings() {
@@ -80,6 +101,46 @@ async function handleSaveRetentionSettings() {
     message.error('保存设置失败: ' + (e?.message || e));
   } finally {
     settingsLoading.value = false;
+  }
+}
+
+async function handleCheckUpdate(quiet = false) {
+  checkingUpdate.value = true;
+  updateError.value = '';
+  try {
+    const result = await checkForUpdate(appVersion.value);
+    updateChecked.value = true;
+    noReleases.value = result.noReleases;
+    hasUpdate.value = result.hasUpdate;
+    latestVersion.value = result.latest || appVersion.value;
+    releaseNotes.value = ((result.release && result.release.body) || '').slice(0, 300);
+    releaseUrl.value = (result.release && result.release.html_url) || '';
+    releasePublishedAt.value = (result.release && result.release.published_at) || '';
+    if (!quiet) {
+      if (result.noReleases) {
+        message.info('GitHub 上暂无已发布的版本');
+      } else if (result.hasUpdate) {
+        message.info(`发现新版本 ${result.latest}`);
+      } else {
+        message.success('当前已是最新版本');
+      }
+    }
+  } catch (e: any) {
+    updateError.value = e?.message || '检查更新失败';
+    if (!quiet) {
+      message.error('检查更新失败: ' + updateError.value);
+    }
+  } finally {
+    checkingUpdate.value = false;
+  }
+}
+
+async function handleOpenRelease() {
+  if (!releaseUrl.value) return;
+  try {
+    await openExternalUrl(releaseUrl.value);
+  } catch (e: any) {
+    message.error('无法打开浏览器: ' + (e?.message || e));
   }
 }
 
@@ -174,6 +235,56 @@ async function handleToggleAutostart(value: boolean) {
       </div>
     </NCard>
 
+    <!-- 版本与更新 -->
+    <NCard title="版本与更新" size="small">
+      <NDescriptions label-placement="left" :column="2" bordered size="small">
+        <NDescriptionsItem label="当前版本">
+          <span class="font-medium">{{ appVersion === '-' ? '-' : `v${appVersion}` }}</span>
+        </NDescriptionsItem>
+        <NDescriptionsItem label="最新版本">
+          <span class="font-medium">{{ updateChecked ? (noReleases ? '暂无发布' : latestVersion) : '-' }}</span>
+          <NTag
+            v-if="updateChecked && !updateError && !noReleases"
+            size="small"
+            :type="hasUpdate ? 'warning' : 'success'"
+            style="margin-left: 8px;"
+          >
+            {{ hasUpdate ? '有新版本' : '已是最新' }}
+          </NTag>
+        </NDescriptionsItem>
+        <NDescriptionsItem v-if="updateChecked && hasUpdate && releasePublishedAt" label="发布时间">
+          <span class="font-medium">{{ releasePublishedAt }}</span>
+        </NDescriptionsItem>
+        <NDescriptionsItem v-if="updateError" label="检查结果">
+          <span class="text-rose-500">{{ updateError }}</span>
+        </NDescriptionsItem>
+      </NDescriptions>
+
+      <div
+        v-if="updateChecked && hasUpdate && releaseNotes"
+        class="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+      >
+        <div class="mb-1 font-medium">更新内容</div>
+        <pre class="whitespace-pre-wrap break-words font-sans">{{ releaseNotes }}</pre>
+      </div>
+
+      <template #action>
+        <div class="flex items-center gap-3">
+          <NButton
+            v-if="updateChecked && hasUpdate && releaseUrl"
+            size="small"
+            type="primary"
+            @click="handleOpenRelease"
+          >
+            前往下载新版本
+          </NButton>
+          <NButton size="small" secondary :loading="checkingUpdate" @click="handleCheckUpdate(false)">
+            检查更新
+          </NButton>
+        </div>
+      </template>
+    </NCard>
+
     <!-- Agent 守护进程状态（横向展示） -->
     <NCard title="Agent 守护进程状态" size="small">
       <NDescriptions label-placement="left" :column="2" bordered size="small">
@@ -181,9 +292,6 @@ async function handleToggleAutostart(value: boolean) {
           <span :class="agentStore.isConnected ? 'text-emerald-500 font-semibold' : 'text-rose-500 font-semibold'">
             {{ agentStore.isConnected ? '运行中 (Connected)' : '未连接 (Disconnected)' }}
           </span>
-        </NDescriptionsItem>
-        <NDescriptionsItem label="Agent 版本">
-          <span class="font-medium">{{ agentStore.status?.version || '-' }}</span>
         </NDescriptionsItem>
         <NDescriptionsItem label="运行时长">
           <span class="font-medium">{{ agentStore.status?.uptime_secs != null ? `${agentStore.status.uptime_secs} s` : '0 s' }}</span>

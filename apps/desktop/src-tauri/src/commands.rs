@@ -149,3 +149,13 @@ pub async fn reroll_trigger(
         )
         .await
 }
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    // 仅允许跳转到本项目的 GitHub Release 页面，避免任意 URL 带来的 open-redirect 风险
+    const ALLOWED_PREFIX: &str = "https://github.com/nice-buddy/easyJob/releases";
+    if !url.starts_with(ALLOWED_PREFIX) {
+        return Err("不支持的链接".to_string());
+    }
+    open::that(&url).map_err(|e| e.to_string())
+}
