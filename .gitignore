@@ -1,6 +1,10 @@
 .superpowers/
 target/
 .DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.iml
 node_modules/
 dist/
 apps/desktop/src-tauri/binaries/

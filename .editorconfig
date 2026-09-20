@@ -1,0 +1,35 @@
+# 让不同编辑器在 macOS / Windows 下写出一致的编码、换行符与缩进，
+# 新文件不会因为编辑器默认设置不同而引入 CRLF 或 BOM。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.rs]
+indent_size = 4
+
+[*.{ts,vue,js,mjs,json,toml,yml,yaml,sql}]
+indent_size = 2
+
+# Markdown 里行尾两个空格是有意义的换行，不能裁剪
+[*.{md,markdown}]
+trim_trailing_whitespace = false
+
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[Makefile]
+indent_style = tab
+
+# Tauri 生成的 schema 与图标资源不含结尾换行，保持原样避免无关 diff
+[apps/desktop/src-tauri/gen/**]
+insert_final_newline = false
+trim_trailing_whitespace = false
+
+[apps/desktop/src-tauri/icons/**]
+insert_final_newline = false

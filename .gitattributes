@@ -1,0 +1,30 @@
+# 统一换行符：仓库内容与工作区一律使用 LF，避免 macOS / Windows 之间出现
+# 纯换行符差异。.gitattributes 的 eol 规则优先于各机器上的 core.autocrlf，
+# 所以 Windows 上即使 core.autocrlf=true 也不会把工作区改成 CRLF。
+* text=auto eol=lf
+
+# Windows 批处理对行尾敏感（含 goto/label 的脚本尤为明显），固定 CRLF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制资源不做换行符转换
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.dmg   binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.dylib binary
+*.pdb   binary
