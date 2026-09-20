@@ -150,9 +150,11 @@ fn test_all_action_kinds_serialization() {
         ActionKind::ExecutePowerShell {
             script: "Get-Process".to_string(),
             no_profile: true,
+            encoding: None,
         },
         ActionKind::ExecuteCmd {
             command: "dir".to_string(),
+            encoding: None,
         },
     ];
 
@@ -161,6 +163,32 @@ fn test_all_action_kinds_serialization() {
         let deserialized: ActionKind = serde_json::from_str(&json).unwrap();
         assert_eq!(kind, deserialized);
     }
+}
+
+#[test]
+fn test_legacy_action_without_encoding_deserializes() {
+    // v1.0.1 之前存量的任务 JSON 没有 encoding 字段，必须仍能读取，缺省为 None（= UTF-8）
+    let cmd: ActionKind =
+        serde_json::from_str(r#"{"ExecuteCmd":{"command":"dir"}}"#).unwrap();
+    assert_eq!(
+        cmd,
+        ActionKind::ExecuteCmd {
+            command: "dir".to_string(),
+            encoding: None,
+        }
+    );
+    let ps: ActionKind = serde_json::from_str(
+        r#"{"ExecutePowerShell":{"script":"Get-Process","no_profile":true}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        ps,
+        ActionKind::ExecutePowerShell {
+            script: "Get-Process".to_string(),
+            no_profile: true,
+            encoding: None,
+        }
+    );
 }
 
 #[test]

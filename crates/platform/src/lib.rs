@@ -6,4 +6,4 @@ pub mod unix;
 pub mod windows;
 
 pub use notification::send_system_notification;
-pub use process::{kill_process_tree, CommandBuilder, PlatformProcess};
+pub use process::{decode_output, kill_process_tree, CommandBuilder, PlatformProcess};

@@ -1,7 +1,7 @@
 use easyjob_common::{Error, Result};
-use easyjob_domain::action::{Action, ActionKind};
+use easyjob_domain::action::{Action, ActionKind, ScriptEncoding};
 use easyjob_domain::execution::ExecutionStatus;
-use easyjob_platform::{kill_process_tree, CommandBuilder};
+use easyjob_platform::{decode_output, kill_process_tree, CommandBuilder};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -43,15 +43,27 @@ impl ProcessRunner {
             });
         }
 
+        // Windows 下 cmd / PowerShell 默认按 GBK 输出，直接按 UTF-8 解会中文乱码。
+        // None（旧数据）保持 UTF-8 默认；显式配置则按配置的编码执行 chcp 与解码。
+        let encoding: Option<ScriptEncoding> = match &action.kind {
+            ActionKind::ExecuteCmd { encoding, .. } => encoding.clone(),
+            ActionKind::ExecutePowerShell { encoding, .. } => encoding.clone(),
+            _ => None,
+        };
         let mut cmd = match &action.kind {
             ActionKind::ExecuteProgram { program, args } => {
                 CommandBuilder::new_program(program, args)
             }
             ActionKind::ExecuteShell { command } => CommandBuilder::new_shell(command),
-            ActionKind::ExecuteCmd { command } => CommandBuilder::new_cmd(command),
-            ActionKind::ExecutePowerShell { script, no_profile } => {
-                CommandBuilder::new_powershell(script, *no_profile)
-            }
+            ActionKind::ExecuteCmd {
+                command,
+                encoding: cmd_encoding,
+            } => CommandBuilder::new_cmd(command, cmd_encoding),
+            ActionKind::ExecutePowerShell {
+                script,
+                no_profile,
+                encoding: ps_encoding,
+            } => CommandBuilder::new_powershell(script, *no_profile, ps_encoding),
         };
 
         if let Some(wd) = working_dir {
@@ -73,8 +85,16 @@ impl ProcessRunner {
         let stdout_buf = Arc::new(std::sync::Mutex::new(Vec::new()));
         let stderr_buf = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        let stdout_handle = tokio::spawn(read_stream_capped(stdout_pipe, stdout_buf.clone()));
-        let stderr_handle = tokio::spawn(read_stream_capped(stderr_pipe, stderr_buf.clone()));
+        let stdout_handle = tokio::spawn(read_stream_capped(
+            stdout_pipe,
+            stdout_buf.clone(),
+            encoding.clone(),
+        ));
+        let stderr_handle = tokio::spawn(read_stream_capped(
+            stderr_pipe,
+            stderr_buf.clone(),
+            encoding.clone(),
+        ));
 
         let wait_fut = async { child.wait().await };
         let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(86400));
@@ -86,8 +106,8 @@ impl ProcessRunner {
                 }
                 let _ = child.wait().await;
                 let (stdout, stderr) = tokio::join!(
-                    collect_pipe_output(stdout_handle, stdout_buf),
-                    collect_pipe_output(stderr_handle, stderr_buf),
+                    collect_pipe_output(stdout_handle, stdout_buf, encoding.clone()),
+                    collect_pipe_output(stderr_handle, stderr_buf, encoding.clone()),
                 );
                 Ok(RunResult {
                     status: ExecutionStatus::Cancelled,
@@ -105,8 +125,8 @@ impl ProcessRunner {
                         }
                         let _ = child.wait().await;
                         let (stdout, stderr) = tokio::join!(
-                            collect_pipe_output(stdout_handle, stdout_buf),
-                            collect_pipe_output(stderr_handle, stderr_buf),
+                            collect_pipe_output(stdout_handle, stdout_buf, encoding.clone()),
+                            collect_pipe_output(stderr_handle, stderr_buf, encoding.clone()),
                         );
                         Ok(RunResult {
                             status: ExecutionStatus::TimedOut,
@@ -119,8 +139,8 @@ impl ProcessRunner {
                     Ok(exit_status) => {
                         let status_code = exit_status.map_err(|e| Error::Process(e.to_string()))?.code();
                         let (stdout, stderr) = tokio::join!(
-                            collect_pipe_output(stdout_handle, stdout_buf),
-                            collect_pipe_output(stderr_handle, stderr_buf),
+                            collect_pipe_output(stdout_handle, stdout_buf, encoding.clone()),
+                            collect_pipe_output(stderr_handle, stderr_buf, encoding.clone()),
                         );
                         let success = status_code == Some(0);
                         Ok(RunResult {
@@ -140,20 +160,21 @@ impl ProcessRunner {
 async fn collect_pipe_output(
     mut handle: tokio::task::JoinHandle<String>,
     buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    encoding: Option<ScriptEncoding>,
 ) -> String {
     match tokio::time::timeout(PIPE_DRAIN_TIMEOUT, &mut handle).await {
         Ok(join_res) => match join_res {
             Ok(s) => s,
             Err(_) => {
                 let bytes = buffer.lock().map(|b| b.clone()).unwrap_or_default();
-                String::from_utf8_lossy(&bytes).to_string()
+                decode_output(&bytes, &encoding)
             }
         },
         Err(_) => {
             // Timed out waiting for pipe EOF (e.g. grandchild inherited FD)
             handle.abort();
             let bytes = buffer.lock().map(|b| b.clone()).unwrap_or_default();
-            String::from_utf8_lossy(&bytes).to_string()
+            decode_output(&bytes, &encoding)
         }
     }
 }
@@ -161,6 +182,7 @@ async fn collect_pipe_output(
 async fn read_stream_capped<R: tokio::io::AsyncRead + Unpin>(
     pipe: Option<R>,
     output_buf: Arc<std::sync::Mutex<Vec<u8>>>,
+    encoding: Option<ScriptEncoding>,
 ) -> String {
     let mut truncated = false;
     if let Some(mut pipe) = pipe {
@@ -185,5 +207,5 @@ async fn read_stream_capped<R: tokio::io::AsyncRead + Unpin>(
         }
     }
     let buf = output_buf.lock().map(|b| b.clone()).unwrap_or_default();
-    String::from_utf8_lossy(&buf).to_string()
+    decode_output(&buf, &encoding)
 }

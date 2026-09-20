@@ -1251,6 +1251,7 @@ name = "easyjob-platform"
 version = "1.0.1"
 dependencies = [
  "easyjob-common",
+ "easyjob-domain",
  "libc",
  "tokio",
  "tracing",

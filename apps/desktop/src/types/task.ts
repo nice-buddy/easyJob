@@ -88,8 +88,11 @@ export interface Trigger {
 export type ActionKind =
   | { ExecuteProgram: { program: string; args: string[] } }
   | { ExecuteShell: { command: string } }
-  | { ExecutePowerShell: { script: string; no_profile: boolean } }
-  | { ExecuteCmd: { command: string } };
+  | { ExecutePowerShell: { script: string; no_profile: boolean; encoding?: ScriptEncoding | null } }
+  | { ExecuteCmd: { command: string; encoding?: ScriptEncoding | null } };
+
+/// 脚本输出编码；未设置（null/undefined）等同 utf8
+export type ScriptEncoding = 'utf8' | 'gbk';
 
 export function getActionType(
   kind: ActionKind

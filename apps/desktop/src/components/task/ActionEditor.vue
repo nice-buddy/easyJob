@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NSelect, NInput, NButton, NSwitch } from 'naive-ui';
 import { Plus, Trash2 } from 'lucide-vue-next';
-import type { Action, ActionKind } from '../../types/task';
+import type { Action, ActionKind, ScriptEncoding } from '../../types/task';
 import { getActionType, isWindowsPlatform } from '../../types/task';
 
 const props = defineProps<{
@@ -14,6 +14,25 @@ const emit = defineEmits<{
 }>();
 
 const isWindows = isWindowsPlatform();
+
+const encodingOptions = [
+  { label: 'UTF-8 (默认)', value: 'utf8' },
+  { label: 'GBK (中文旧脚本)', value: 'gbk' },
+];
+
+function getEncoding(action: Action): ScriptEncoding {
+  if ('ExecuteCmd' in action.kind) return action.kind.ExecuteCmd.encoding ?? 'utf8';
+  if ('ExecutePowerShell' in action.kind) return action.kind.ExecutePowerShell.encoding ?? 'utf8';
+  return 'utf8';
+}
+
+function setEncoding(action: Action, value: ScriptEncoding) {
+  if ('ExecuteCmd' in action.kind) {
+    action.kind.ExecuteCmd.encoding = value;
+  } else if ('ExecutePowerShell' in action.kind) {
+    action.kind.ExecutePowerShell.encoding = value;
+  }
+}
 
 const platformDefaultOptions = isWindows
   ? [
@@ -194,18 +213,40 @@ function setArgsString(action: Action, val: string) {
           <NSwitch v-model:value="act.kind.ExecutePowerShell.no_profile" size="small" />
           <span class="text-slate-500 dark:text-zinc-400">使用 -NoProfile 模式 (推荐，启动更快更稳定)</span>
         </div>
+        <div>
+          <label class="block text-slate-500 dark:text-zinc-400 mb-1">输出编码</label>
+          <NSelect
+            :value="getEncoding(act)"
+            :options="encodingOptions"
+            size="small"
+            class="w-48"
+            @update:value="setEncoding(act, $event)"
+          />
+        </div>
       </div>
 
       <!-- ExecuteCmd Editor -->
-      <div v-if="'ExecuteCmd' in act.kind" class="space-y-1 text-xs">
-        <label class="block text-slate-500 dark:text-zinc-400">Windows CMD 命令 (cmd.exe /C)</label>
-        <NInput
-          v-model:value="act.kind.ExecuteCmd.command"
-          type="textarea"
-          :autosize="{ minRows: 2, maxRows: 6 }"
-          placeholder="例如：dir /s /b C:\Logs"
-          size="small"
-        />
+      <div v-if="'ExecuteCmd' in act.kind" class="space-y-2 text-xs">
+        <div>
+          <label class="block text-slate-500 dark:text-zinc-400 mb-1">Windows CMD 命令 (cmd.exe /C)</label>
+          <NInput
+            v-model:value="act.kind.ExecuteCmd.command"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 6 }"
+            placeholder="例如：dir /s /b C:\Logs"
+            size="small"
+          />
+        </div>
+        <div>
+          <label class="block text-slate-500 dark:text-zinc-400 mb-1">输出编码</label>
+          <NSelect
+            :value="getEncoding(act)"
+            :options="encodingOptions"
+            size="small"
+            class="w-48"
+            @update:value="setEncoding(act, $event)"
+          />
+        </div>
       </div>
     </div>
   </div>

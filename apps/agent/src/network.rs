@@ -37,6 +37,16 @@ pub fn event_matches(ev: &NetworkEvent, events: &[NetworkEventKind]) -> bool {
     events.contains(&ev.kind())
 }
 
+/// 整机连通性仲裁：IP 变化通知只说明「某接口参数变了」，不代表连通性方向。
+/// 以整机可达性探测结果定方向：通 → Connect，不通 → Disconnect。
+pub fn arbitrate_direction(machine_reachable: bool) -> NetworkEventKind {
+    if machine_reachable {
+        NetworkEventKind::Connect
+    } else {
+        NetworkEventKind::Disconnect
+    }
+}
+
 /// SSID 过滤：network_name 为 None = 任意网络；Some(name) = 精确、区分大小写匹配
 pub fn name_matches(ev: &NetworkEvent, network_name: &Option<String>) -> bool {
     match network_name {
@@ -56,7 +66,37 @@ async fn tcp_reachable(addr: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// 是否为公网地址：内网 DNS 可能能解析出域名但整机仍出不了外网，
+/// 因此 DNS 兜底必须解析到公网地址才算可达。
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // 100.64.0.0/10 运营商级 NAT
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                // 0.0.0.0/8
+                || o[0] == 0)
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                // fe80::/10 链路本地
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // fc00::/7 唯一本地地址
+                || (v6.segments()[0] & 0xfe00) == 0xfc00)
+        }
+    }
+}
+
 /// 共享 Online 探测：TCP 1.1.1.1:80（2s 超时），失败 fallback DNS 解析 example.com
+/// （仅当解析到公网地址时才算可达）
 pub async fn probe_online() -> bool {
     if tcp_reachable("1.1.1.1:80").await {
         return true;
@@ -66,11 +106,7 @@ pub async fn probe_online() -> bool {
         tokio::net::lookup_host("example.com:443"),
     )
     .await
-    .map(|resolved| {
-        resolved
-            .map(|mut addrs| addrs.next().is_some())
-            .unwrap_or(false)
-    })
+    .map(|resolved| resolved.map(|mut addrs| addrs.any(|sa| is_public_ip(sa.ip()))).unwrap_or(false))
     .unwrap_or(false)
 }
 
@@ -500,10 +536,14 @@ mod platform_windows {
         });
         // MIB_IPINTERFACE_ROW 没有 OperStatus，只有 Connected（是否已连到网络接入点）。
         //
-        // 与 macOS 同理，通知是在接口**任意**参数变化（MTU / metric / DNS / 地址）时
-        // 到达的，并非只在连通性变化时到达。这里按接口 LUID 做状态边沿检测，只在
-        // 连通性真正变化时才上报，避免接口仍连接时被纯参数变更误报成 Connect。
-        // MibDeleteInstance（接口行被移除）按已断开处理。
+        // 通知是在接口**任意**参数变化（MTU / metric / DNS / 地址）时到达的，
+        // 并非只在连通性变化时到达。禁用/启用适配器的 teardown/setup 过程中会先
+        // 产生一串中间态通知，直接按单接口 Connected 定方向会把事件报反
+        //（禁用报 Connect、启用报 Disconnect）。
+        //
+        // 因此这里只做边沿去重（同一接口重复通知合并），方向由整机连通性仲裁决定：
+        // 等待接口状态稳定后探测整机可达性，通 → Connect，不通 → Disconnect。
+        // MibDeleteInstance（接口行被移除）同样走仲裁（此时多半已不通）。
         let key = if row.is_null() {
             0u64
         } else {
@@ -514,14 +554,72 @@ mod platform_windows {
         if !state.edge.changed(key, connected) {
             return;
         }
-        let event = if connected {
-            NetworkEvent::Connect {
-                ssid: query_current_ssid(),
-            }
-        } else {
-            NetworkEvent::Disconnect { ssid: None }
+        spawn_arbitrated_event(&state);
+    }
+
+    /// 边沿翻转后的整机连通性仲裁：等待接口状态稳定（DHCP / teardown 完成），
+    /// 再以整机可达性决定事件方向，避免 teardown/setup 中间态把方向报反。
+    fn spawn_arbitrated_event(state: &WatcherState) {
+        static ARBITRATE_SEQ: AtomicI64 = AtomicI64::new(0);
+        let seq = ARBITRATE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+
+        let on_event = state.on_event.clone();
+        let debouncer = state.debouncer.clone();
+        let probe_handle = state.probe_handle.clone();
+        let Some(handle) = probe_handle else {
+            return;
         };
-        emit(&state, event);
+        let inner_handle = handle.clone();
+        handle.spawn(async move {
+            // 稳定期：等待适配器 teardown/setup 与 DHCP 完成
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // 只有最新一次边沿才真正上报，中间的抖动直接丢弃
+            if ARBITRATE_SEQ.load(Ordering::Relaxed) != seq {
+                return;
+            }
+            let reachable = super::probe_online().await;
+            let event = match super::arbitrate_direction(reachable) {
+                easyjob_domain::trigger::NetworkEventKind::Connect => NetworkEvent::Connect {
+                    ssid: query_current_ssid(),
+                },
+                _ => NetworkEvent::Disconnect { ssid: None },
+            };
+            if debouncer.allow(event.kind()) {
+                info!("network event (arbitrated): {:?}", event);
+                on_event(event);
+                if reachable {
+                    spawn_online_probe_with(on_event, debouncer, inner_handle);
+                }
+            }
+        });
+    }
+
+    /// Online 探测的可复用内核：Connect 之后异步探测整机可达，通则上报 Online。
+    fn spawn_online_probe_with(
+        on_event: SendFn,
+        debouncer: Arc<Debouncer>,
+        handle: tokio::runtime::Handle,
+    ) {
+        static LAST_PROBE_MS: AtomicI64 = AtomicI64::new(0);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if now_ms - LAST_PROBE_MS.load(Ordering::Relaxed) < 10_000 {
+            return; // 10s 探测冷却
+        }
+        LAST_PROBE_MS.store(now_ms, Ordering::Relaxed);
+
+        handle.spawn(async move {
+            if super::probe_online().await {
+                let ev = NetworkEvent::Online {
+                    ssid: query_current_ssid(),
+                };
+                if debouncer.allow(ev.kind()) {
+                    on_event(ev);
+                }
+            }
+        });
     }
 
     fn start_wlan_watch(state: Arc<WatcherState>) {
@@ -597,31 +695,10 @@ mod platform_windows {
     }
 
     fn spawn_online_probe(state: &WatcherState) {
-        static LAST_PROBE_MS: AtomicI64 = AtomicI64::new(0);
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        if now_ms - LAST_PROBE_MS.load(Ordering::Relaxed) < 10_000 {
-            return; // 10s 探测冷却
-        }
-        LAST_PROBE_MS.store(now_ms, Ordering::Relaxed);
-
-        let on_event = state.on_event.clone();
-        let debouncer = state.debouncer.clone();
         let Some(handle) = state.probe_handle.clone() else {
             return;
         };
-        handle.spawn(async move {
-            if super::probe_online().await {
-                let ev = NetworkEvent::Online {
-                    ssid: query_current_ssid(),
-                };
-                if debouncer.allow(ev.kind()) {
-                    on_event(ev);
-                }
-            }
-        });
+        spawn_online_probe_with(state.on_event.clone(), state.debouncer.clone(), handle);
     }
 
     /// 查询当前关联 SSID（非 WiFi 或失败 → None）
@@ -716,6 +793,43 @@ mod tests {
         assert!(edge.changed("eth0", false)); // 只影响自己的 key
         assert!(!edge.changed("wlan0", true));
         assert!(!edge.changed("eth0", false));
+    }
+
+    #[test]
+    fn arbitrate_direction_follows_machine_reachability() {
+        // 禁用外网适配器（内网不能上外网）：整机不通 → Disconnect
+        assert_eq!(
+            arbitrate_direction(false),
+            NetworkEventKind::Disconnect
+        );
+        // 启用外网适配器且 DHCP 完成后：整机通 → Connect
+        assert_eq!(arbitrate_direction(true), NetworkEventKind::Connect);
+    }
+
+    #[test]
+    fn is_public_ip_rejects_private_and_keeps_public() {
+        use std::net::IpAddr;
+        // 内网 / 保留地址：不算可上网
+        for s in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.10.10",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+        ] {
+            let ip: IpAddr = s.parse().unwrap();
+            assert!(!is_public_ip(ip), "{s} 不应判为公网");
+        }
+        // 公网地址：算可上网
+        for s in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
+            let ip: IpAddr = s.parse().unwrap();
+            assert!(is_public_ip(ip), "{s} 应判为公网");
+        }
     }
 
     #[test]
