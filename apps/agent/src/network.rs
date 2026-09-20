@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use easyjob_domain::trigger::{NetworkEventKind, TriggerKind};
 use easyjob_persistence::task_repo::{SqliteTaskRepository, TaskRepository};
 use easyjob_scheduler::scheduler::SchedulerCommand;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -37,16 +39,6 @@ pub fn event_matches(ev: &NetworkEvent, events: &[NetworkEventKind]) -> bool {
     events.contains(&ev.kind())
 }
 
-/// 整机连通性仲裁：IP 变化通知只说明「某接口参数变了」，不代表连通性方向。
-/// 以整机可达性探测结果定方向：通 → Connect，不通 → Disconnect。
-pub fn arbitrate_direction(machine_reachable: bool) -> NetworkEventKind {
-    if machine_reachable {
-        NetworkEventKind::Connect
-    } else {
-        NetworkEventKind::Disconnect
-    }
-}
-
 /// SSID 过滤：network_name 为 None = 任意网络；Some(name) = 精确、区分大小写匹配
 pub fn name_matches(ev: &NetworkEvent, network_name: &Option<String>) -> bool {
     match network_name {
@@ -55,19 +47,8 @@ pub fn name_matches(ev: &NetworkEvent, network_name: &Option<String>) -> bool {
     }
 }
 
-/// 单个 TCP 地址可达性探测：2s 超时，且内层 connect 结果必须为 Ok
-async fn tcp_reachable(addr: &str) -> bool {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::net::TcpStream::connect(addr),
-    )
-    .await
-    .map(|res| res.is_ok())
-    .unwrap_or(false)
-}
-
 /// 是否为公网地址：内网 DNS 可能能解析出域名但整机仍出不了外网，
-/// 因此 DNS 兜底必须解析到公网地址才算可达。
+/// 因此解析结果里只认公网地址。
 fn is_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
@@ -95,19 +76,105 @@ fn is_public_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-/// 共享 Online 探测：TCP 1.1.1.1:80（2s 超时），失败 fallback DNS 解析 example.com
-/// （仅当解析到公网地址时才算可达）
-pub async fn probe_online() -> bool {
-    if tcp_reachable("1.1.1.1:80").await {
-        return true;
+/// 联网探测端点：(域名, 路径, 判定标记)。
+/// 标记为 None 表示要求 HTTP 204；Some(marker) 表示要求 HTTP 200 且响应体含该标记。
+/// 第一个是 Windows NCSI 用的探测点，第二个为国内可用的探测点，第三个是国际兜底。
+const ONLINE_PROBES: &[(&str, &str, Option<&str>)] = &[
+    (
+        "www.msftconnecttest.com",
+        "/connecttest.txt",
+        Some("Microsoft Connect Test"),
+    ),
+    ("connect.rom.miui.com", "/generate_204", None),
+    ("cp.cloudflare.com", "/generate_204", None),
+];
+
+const PROBE_DNS_TIMEOUT: Duration = Duration::from_millis(1500);
+const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
+const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// 校验一次探测响应是否符合预期。抽成纯函数，便于不依赖网络的单测。
+fn response_matches(raw: &[u8], marker: Option<&str>) -> bool {
+    let text = String::from_utf8_lossy(raw);
+    let Some(status) = text
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+    else {
+        return false;
+    };
+    match marker {
+        Some(m) => status == "200" && text.contains(m),
+        None => status == "204",
     }
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::net::lookup_host("example.com:443"),
+}
+
+/// 单端点探测：解析域名 → 连 80 → 发最小 GET → 按预期校验响应。
+/// 只认公网解析结果；必须拿到预期的应用层响应，TCP 能连上不算数。
+async fn http_probe(host: &str, path: &str, marker: Option<&str>) -> bool {
+    let Ok(Ok(addrs)) = tokio::time::timeout(
+        PROBE_DNS_TIMEOUT,
+        tokio::net::lookup_host((host, 80)),
     )
     .await
-    .map(|resolved| resolved.map(|mut addrs| addrs.any(|sa| is_public_ip(sa.ip()))).unwrap_or(false))
-    .unwrap_or(false)
+    else {
+        return false;
+    };
+
+    // IPv4 优先，避免在只有 IPv6 被黑洞的网络里白等一轮
+    let mut addrs: Vec<std::net::SocketAddr> = addrs
+        .filter(|sa| is_public_ip(sa.ip()))
+        .collect();
+    addrs.sort_by_key(|sa| sa.is_ipv6());
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: easyJob\r\nConnection: close\r\n\r\n"
+    );
+
+    for addr in addrs.into_iter().take(2) {
+        let Ok(Ok(mut stream)) =
+            tokio::time::timeout(PROBE_CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await
+        else {
+            continue;
+        };
+        if tokio::time::timeout(PROBE_READ_TIMEOUT, stream.write_all(request.as_bytes()))
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(true)
+        {
+            continue;
+        }
+
+        let mut raw = Vec::new();
+        let _ = tokio::time::timeout(PROBE_READ_TIMEOUT, async {
+            let mut chunk = [0u8; 1024];
+            while raw.len() < 8192 {
+                match stream.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => raw.extend_from_slice(&chunk[..n]),
+                }
+            }
+        })
+        .await;
+
+        if response_matches(&raw, marker) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 共享 Online 探测：必须拿到真实的应用层响应才算在线。
+/// 内网 DNS 常把公网域名转发解析成功（能解析 ≠ 能上网），透明代理也可能完成
+/// TCP 握手，因此只有解析 + 建连 + 预期响应全部成立才判为在线。
+pub async fn probe_online() -> bool {
+    for (host, path, marker) in ONLINE_PROBES {
+        if http_probe(host, path, *marker).await {
+            tracing::debug!("online probe ok: {host}{path}");
+            return true;
+        }
+    }
+    false
 }
 
 /// 派发：查启用任务 → 匹配 Network 触发器（事件类型 + SSID）→ TriggerNow（每任务至多一次）
@@ -448,6 +515,7 @@ mod platform_windows {
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
     use tracing::{error, info};
     use windows::Win32::Foundation::{HANDLE, WIN32_ERROR};
     use windows::Win32::NetworkManagement::IpHelper::{
@@ -557,41 +625,79 @@ mod platform_windows {
         spawn_arbitrated_event(&state);
     }
 
-    /// 边沿翻转后的整机连通性仲裁：等待接口状态稳定（DHCP / teardown 完成），
-    /// 再以整机可达性决定事件方向，避免 teardown/setup 中间态把方向报反。
+    /// 边沿稳定期：等适配器 teardown / 链路建立结束
+    const EDGE_SETTLE: Duration = Duration::from_millis(1000);
+    /// 联网确认窗口：接口起来后 DHCP / 路由就绪可能晚于一次探测
+    const ONLINE_CONFIRM_WINDOW: Duration = Duration::from_secs(7);
+    /// 窗口内单次探测的耗时上限
+    const PROBE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+
+    /// 边沿翻转后的整机连通性仲裁：接口状态稳定后，在一个窗口内反复确认能否
+    /// 真正出外网，再据此定事件方向，避免 teardown/setup 中间态与单次探测误判。
     fn spawn_arbitrated_event(state: &WatcherState) {
         static ARBITRATE_SEQ: AtomicI64 = AtomicI64::new(0);
         let seq = ARBITRATE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
 
         let on_event = state.on_event.clone();
         let debouncer = state.debouncer.clone();
-        let probe_handle = state.probe_handle.clone();
-        let Some(handle) = probe_handle else {
+        let Some(handle) = state.probe_handle.clone() else {
             return;
         };
-        let inner_handle = handle.clone();
         handle.spawn(async move {
-            // 稳定期：等待适配器 teardown/setup 与 DHCP 完成
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(EDGE_SETTLE).await;
+            if ARBITRATE_SEQ.load(Ordering::Relaxed) != seq {
+                return;
+            }
+            let reachable = confirm_online().await;
             // 只有最新一次边沿才真正上报，中间的抖动直接丢弃
             if ARBITRATE_SEQ.load(Ordering::Relaxed) != seq {
                 return;
             }
-            let reachable = super::probe_online().await;
-            let event = match super::arbitrate_direction(reachable) {
-                easyjob_domain::trigger::NetworkEventKind::Connect => NetworkEvent::Connect {
-                    ssid: query_current_ssid(),
-                },
-                _ => NetworkEvent::Disconnect { ssid: None },
-            };
-            if debouncer.allow(event.kind()) {
-                info!("network event (arbitrated): {:?}", event);
-                on_event(event);
-                if reachable {
-                    spawn_online_probe_with(on_event, debouncer, inner_handle);
-                }
+            if reachable {
+                emit_arbitrated(
+                    &on_event,
+                    &debouncer,
+                    NetworkEvent::Connect {
+                        ssid: query_current_ssid(),
+                    },
+                );
+                emit_arbitrated(
+                    &on_event,
+                    &debouncer,
+                    NetworkEvent::Online {
+                        ssid: query_current_ssid(),
+                    },
+                );
+            } else {
+                emit_arbitrated(&on_event, &debouncer, NetworkEvent::Disconnect { ssid: None });
             }
         });
+    }
+
+    /// 窗口内反复确认联网状态：任一次确认在线即返回 true；窗口耗尽仍未确认才算离线。
+    /// 启用网卡时 DHCP / 路由就绪慢一点，也不会被误判成断开。
+    async fn confirm_online() -> bool {
+        let start = std::time::Instant::now();
+        loop {
+            if tokio::time::timeout(PROBE_ATTEMPT_TIMEOUT, super::probe_online())
+                .await
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            if start.elapsed() + Duration::from_millis(500) >= ONLINE_CONFIRM_WINDOW {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    fn emit_arbitrated(on_event: &SendFn, debouncer: &Debouncer, event: NetworkEvent) {
+        if !debouncer.allow(event.kind()) {
+            return;
+        }
+        info!("network event (arbitrated): {:?}", event);
+        on_event(event);
     }
 
     /// Online 探测的可复用内核：Connect 之后异步探测整机可达，通则上报 Online。
@@ -796,14 +902,25 @@ mod tests {
     }
 
     #[test]
-    fn arbitrate_direction_follows_machine_reachability() {
-        // 禁用外网适配器（内网不能上外网）：整机不通 → Disconnect
-        assert_eq!(
-            arbitrate_direction(false),
-            NetworkEventKind::Disconnect
-        );
-        // 启用外网适配器且 DHCP 完成后：整机通 → Connect
-        assert_eq!(arbitrate_direction(true), NetworkEventKind::Connect);
+    fn response_matches_only_accepts_expected_online_response() {
+        // 204 约定：只认 204，200/302/空响应都不算在线
+        assert!(response_matches(b"HTTP/1.1 204 No Content\r\n\r\n", None));
+        assert!(!response_matches(b"HTTP/1.1 200 OK\r\n\r\n<html>", None));
+        assert!(!response_matches(b"HTTP/1.1 302 Found\r\nLocation: /\r\n\r\n", None));
+        assert!(!response_matches(b"", None));
+        // 标记约定：必须 200 且响应体含标记（抓门户劫持返回的 HTML 页面）
+        assert!(response_matches(
+            b"HTTP/1.1 200 OK\r\n\r\nMicrosoft Connect Test\r\n",
+            Some("Microsoft Connect Test")
+        ));
+        assert!(!response_matches(
+            b"HTTP/1.1 200 OK\r\n\r\n<html>login</html>",
+            Some("Microsoft Connect Test")
+        ));
+        assert!(!response_matches(
+            b"HTTP/1.1 302 Found\r\n\r\nMicrosoft Connect Test",
+            Some("Microsoft Connect Test")
+        ));
     }
 
     #[test]
@@ -870,22 +987,6 @@ mod tests {
         assert!(!name_matches(&connect(Some("myhome")), &name));
         assert!(!name_matches(&connect(None), &name));
         assert!(!name_matches(&connect(Some("MyHome2")), &name));
-    }
-
-    #[tokio::test]
-    async fn tcp_reachable_true_for_listening_port() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        assert!(tcp_reachable(&addr).await);
-    }
-
-    #[tokio::test]
-    async fn tcp_reachable_false_for_closed_port() {
-        // 先占端口再立即释放，确保回环上该端口无人监听（避免 flaky 的固定端口假设）
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        drop(listener);
-        assert!(!tcp_reachable(&addr).await);
     }
 
     fn task_with_network_trigger(
