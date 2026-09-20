@@ -513,7 +513,7 @@ mod platform_macos {
 mod platform_windows {
     use super::{Debouncer, EdgeDetector, NetworkEvent};
     use std::ffi::c_void;
-    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI8, AtomicI64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
     use tracing::{error, info};
@@ -544,6 +544,9 @@ mod platform_windows {
         edge: EdgeDetector<u64>,
         // 回调在系统线程触发，那里没有 Tokio 上下文，故在 start() 内取 Handle
         probe_handle: Option<tokio::runtime::Handle>,
+        // 整机联网状态：-1 未知（尚未建立基线）、0 离线、1 在线。
+        // 事件只在「整机能不能出外网」发生翻转时才上报，与是哪块网卡抖动无关。
+        online_state: Arc<AtomicI8>,
     }
 
     impl WindowsNetworkWatcher {
@@ -557,6 +560,7 @@ mod platform_windows {
                 debouncer: Arc::new(Debouncer::new()),
                 edge: EdgeDetector::new(),
                 probe_handle: tokio::runtime::Handle::try_current().ok(),
+                online_state: Arc::new(AtomicI8::new(-1)),
             });
 
             // 1) IP 接口变动（有线 + 通用 up/down）
@@ -564,6 +568,20 @@ mod platform_windows {
 
             // 2) WLAN 专用通知（提供 SSID）
             start_wlan_watch(state.clone());
+
+            // 3) 建立联网状态基线：启动时只记录状态，不补报事件，
+            //    否则应用一启动就会凭空报一次「连接网络」。
+            if let Some(handle) = state.probe_handle.clone() {
+                let baseline = state.clone();
+                handle.spawn(async move {
+                    tokio::time::sleep(BASELINE_SETTLE).await;
+                    let online = confirm_online().await;
+                    let value = if online { 1 } else { 0 };
+                    let _ = baseline
+                        .online_state
+                        .compare_exchange(-1, value, Ordering::Relaxed, Ordering::Relaxed);
+                });
+            }
 
             Self { state }
         }
@@ -612,14 +630,16 @@ mod platform_windows {
         // 因此这里只做边沿去重（同一接口重复通知合并），方向由整机连通性仲裁决定：
         // 等待接口状态稳定后探测整机可达性，通 → Connect，不通 → Disconnect。
         // MibDeleteInstance（接口行被移除）同样走仲裁（此时多半已不通）。
-        let key = if row.is_null() {
-            0u64
+        let changed = if row.is_null() {
+            // 拿不到接口行（例如接口已被移除）时无法按 LUID 去重，
+            // 直接交给整机状态机判断，避免漏掉「断开」这类关键边沿。
+            true
         } else {
-            unsafe { (*row).InterfaceLuid.Value }
+            let key = unsafe { (*row).InterfaceLuid.Value };
+            let connected = notification_type != MibDeleteInstance && unsafe { (*row).Connected };
+            state.edge.changed(key, connected)
         };
-        let connected =
-            notification_type != MibDeleteInstance && !row.is_null() && unsafe { (*row).Connected };
-        if !state.edge.changed(key, connected) {
+        if !changed {
             return;
         }
         spawn_arbitrated_event(&state);
@@ -627,19 +647,25 @@ mod platform_windows {
 
     /// 边沿稳定期：等适配器 teardown / 链路建立结束
     const EDGE_SETTLE: Duration = Duration::from_millis(1000);
+    /// 启动时建立联网基线的延迟：等网络栈初始化完成再判定
+    const BASELINE_SETTLE: Duration = Duration::from_millis(2000);
     /// 联网确认窗口：接口起来后 DHCP / 路由就绪可能晚于一次探测
     const ONLINE_CONFIRM_WINDOW: Duration = Duration::from_secs(7);
     /// 窗口内单次探测的耗时上限
     const PROBE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 
-    /// 边沿翻转后的整机连通性仲裁：接口状态稳定后，在一个窗口内反复确认能否
-    /// 真正出外网，再据此定事件方向，避免 teardown/setup 中间态与单次探测误判。
+    /// 网络边沿后的整机连通性仲裁：接口状态稳定后，在一个窗口内反复确认能否
+    /// 真正出外网，再与上一次已知状态比较，只有整机联网状态翻转才上报事件。
+    ///
+    /// 这样「禁用外网网卡」只会报断开、「启用」只会报连接 + 能上网，
+    /// 而另一块网卡或 WiFi 的抖动不会凭空造出事件。
     fn spawn_arbitrated_event(state: &WatcherState) {
         static ARBITRATE_SEQ: AtomicI64 = AtomicI64::new(0);
         let seq = ARBITRATE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
 
         let on_event = state.on_event.clone();
         let debouncer = state.debouncer.clone();
+        let online_state = state.online_state.clone();
         let Some(handle) = state.probe_handle.clone() else {
             return;
         };
@@ -653,6 +679,14 @@ mod platform_windows {
             if ARBITRATE_SEQ.load(Ordering::Relaxed) != seq {
                 return;
             }
+            let current: i8 = if reachable { 1 } else { 0 };
+            let previous = online_state.load(Ordering::Relaxed);
+            if previous == current {
+                // 整机联网状态没变（例如另一块网卡抖动），不重复上报
+                return;
+            }
+            online_state.store(current, Ordering::Relaxed);
+            info!("machine online state: {previous} -> {current}");
             if reachable {
                 emit_arbitrated(
                     &on_event,
@@ -700,34 +734,6 @@ mod platform_windows {
         on_event(event);
     }
 
-    /// Online 探测的可复用内核：Connect 之后异步探测整机可达，通则上报 Online。
-    fn spawn_online_probe_with(
-        on_event: SendFn,
-        debouncer: Arc<Debouncer>,
-        handle: tokio::runtime::Handle,
-    ) {
-        static LAST_PROBE_MS: AtomicI64 = AtomicI64::new(0);
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        if now_ms - LAST_PROBE_MS.load(Ordering::Relaxed) < 10_000 {
-            return; // 10s 探测冷却
-        }
-        LAST_PROBE_MS.store(now_ms, Ordering::Relaxed);
-
-        handle.spawn(async move {
-            if super::probe_online().await {
-                let ev = NetworkEvent::Online {
-                    ssid: query_current_ssid(),
-                };
-                if debouncer.allow(ev.kind()) {
-                    on_event(ev);
-                }
-            }
-        });
-    }
-
     fn start_wlan_watch(state: Arc<WatcherState>) {
         let callback: WLAN_NOTIFICATION_CALLBACK = Some(wlan_callback);
         std::thread::spawn(move || unsafe {
@@ -768,43 +774,21 @@ mod platform_windows {
         }
         // 上下文为 start_wlan_watch 中 Arc::as_ptr 的借用指针（state 由该线程持有）
         let state = unsafe { &*(context as *const WatcherState) };
-        let event = if n.NotificationCode == wlan_notification_acm_connection_complete.0 as u32 {
-            NetworkEvent::Connect {
-                ssid: query_current_ssid(),
-            }
-        } else if n.NotificationCode == wlan_notification_acm_disconnected.0 as u32 {
-            NetworkEvent::Disconnect {
-                ssid: query_current_ssid(),
-            }
-        } else {
+        // 只关心「关联完成 / 已断开」；其余 ACM 通知（扫描、认证中间态等）忽略。
+        // 方向不按 WLAN 通知本身判定：WiFi 掉线时整机可能仍能出外网（有线还在），
+        // 反之 WiFi 连上也可能没有外网，统一交给整机联网状态机决定。
+        let relevant = n.NotificationCode == wlan_notification_acm_connection_complete.0 as u32
+            || n.NotificationCode == wlan_notification_acm_disconnected.0 as u32;
+        if !relevant {
             return;
-        };
-        emit(state, event);
+        }
+        spawn_arbitrated_event(state);
     }
 
     impl WatcherState {
         fn running_flag(&self) -> bool {
             self.running.load(Ordering::Relaxed)
         }
-    }
-
-    fn emit(state: &WatcherState, event: NetworkEvent) {
-        if !state.debouncer.allow(event.kind()) {
-            return;
-        }
-        let is_connect = matches!(event, NetworkEvent::Connect { .. });
-        info!("network event: {:?}", event);
-        (state.on_event)(event);
-        if is_connect {
-            spawn_online_probe(state);
-        }
-    }
-
-    fn spawn_online_probe(state: &WatcherState) {
-        let Some(handle) = state.probe_handle.clone() else {
-            return;
-        };
-        spawn_online_probe_with(state.on_event.clone(), state.debouncer.clone(), handle);
     }
 
     /// 查询当前关联 SSID（非 WiFi 或失败 → None）

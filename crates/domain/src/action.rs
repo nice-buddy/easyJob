@@ -1,7 +1,7 @@
 use easyjob_common::{ActionId, TaskId};
 use serde::{Deserialize, Serialize};
 
-/// 脚本输出编码。None 表示默认 UTF-8；Windows 下可显式指定 GBK 等代码页。
+/// 脚本输出编码。None 表示平台默认：Windows 下为 GBK（936），其他平台为 UTF-8。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScriptEncoding {
     #[serde(rename = "utf8")]

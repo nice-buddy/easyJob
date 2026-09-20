@@ -16,14 +16,14 @@ const emit = defineEmits<{
 const isWindows = isWindowsPlatform();
 
 const encodingOptions = [
-  { label: 'UTF-8 (默认)', value: 'utf8' },
-  { label: 'GBK (中文旧脚本)', value: 'gbk' },
+  { label: 'GBK (默认，中文 Windows)', value: 'gbk' },
+  { label: 'UTF-8', value: 'utf8' },
 ];
 
 function getEncoding(action: Action): ScriptEncoding {
-  if ('ExecuteCmd' in action.kind) return action.kind.ExecuteCmd.encoding ?? 'utf8';
-  if ('ExecutePowerShell' in action.kind) return action.kind.ExecutePowerShell.encoding ?? 'utf8';
-  return 'utf8';
+  if ('ExecuteCmd' in action.kind) return action.kind.ExecuteCmd.encoding ?? 'gbk';
+  if ('ExecutePowerShell' in action.kind) return action.kind.ExecutePowerShell.encoding ?? 'gbk';
+  return 'gbk';
 }
 
 function setEncoding(action: Action, value: ScriptEncoding) {

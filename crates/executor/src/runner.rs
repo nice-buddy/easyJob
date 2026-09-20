@@ -43,8 +43,8 @@ impl ProcessRunner {
             });
         }
 
-        // Windows 下 cmd / PowerShell 默认按 GBK 输出，直接按 UTF-8 解会中文乱码。
-        // None（旧数据）保持 UTF-8 默认；显式配置则按配置的编码执行 chcp 与解码。
+        // Windows 下 cmd / PowerShell 的中文输出普遍是 GBK（936），按 UTF-8 解会乱码。
+        // None（旧数据 / 未配置）在 Windows 上按 GBK 处理；显式配置则按配置执行 chcp 与解码。
         let encoding: Option<ScriptEncoding> = match &action.kind {
             ActionKind::ExecuteCmd { encoding, .. } => encoding.clone(),
             ActionKind::ExecutePowerShell { encoding, .. } => encoding.clone(),

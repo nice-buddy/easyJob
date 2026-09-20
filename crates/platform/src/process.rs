@@ -4,33 +4,53 @@ use tokio::process::Command;
 pub struct CommandBuilder;
 
 /// 按动作配置的编码解码子进程输出字节。
-/// - None / Utf8：先按 UTF-8 严格解，失败则 lossy 兜底
-/// - Gbk（Windows）：用系统 API 按当前 ANSI 代码页（中文系统即 GBK）解码，失败则 lossy 兜底
+/// - Utf8：按 UTF-8 解，失败则 lossy 兜底
+/// - Gbk：按 GBK（代码页 936）解
+/// - None（旧数据 / 未显式配置）：Windows 下等同 Gbk，其他平台等同 Utf8
 pub fn decode_output(
     bytes: &[u8],
     encoding: &Option<easyjob_domain::action::ScriptEncoding>,
 ) -> String {
     use easyjob_domain::action::ScriptEncoding;
     match encoding {
-        Some(ScriptEncoding::Gbk) => decode_ansi(bytes),
-        _ => match String::from_utf8(bytes.to_vec()) {
-            Ok(s) => s,
-            Err(_) => String::from_utf8_lossy(bytes).to_string(),
-        },
+        Some(ScriptEncoding::Utf8) => decode_utf8(bytes),
+        Some(ScriptEncoding::Gbk) => decode_gbk(bytes),
+        None => default_decode(bytes),
+    }
+}
+
+fn decode_utf8(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => String::from_utf8_lossy(bytes).to_string(),
     }
 }
 
 #[cfg(windows)]
-fn decode_ansi(bytes: &[u8]) -> String {
-    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_ACP, MB_ERR_INVALID_CHARS};
+fn default_decode(bytes: &[u8]) -> String {
+    // 中文 Windows 控制台与多数命令行工具默认输出 GBK
+    decode_gbk(bytes)
+}
+
+#[cfg(not(windows))]
+fn default_decode(bytes: &[u8]) -> String {
+    decode_utf8(bytes)
+}
+
+/// 按 GBK（代码页 936）解码。显式指定 936 而不是 CP_ACP，
+/// 这样在非中文 Windows 上也能正确解出 GBK 脚本的输出。
+#[cfg(windows)]
+fn decode_gbk(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::MultiByteToWideChar;
+    const CP_GBK: u32 = 936;
     if bytes.is_empty() {
         return String::new();
     }
     unsafe {
         // 先查询所需宽字符数
         let needed = MultiByteToWideChar(
-            CP_ACP,
-            MB_ERR_INVALID_CHARS,
+            CP_GBK,
+            0,
             bytes.as_ptr(),
             bytes.len() as i32,
             std::ptr::null_mut(),
@@ -41,8 +61,8 @@ fn decode_ansi(bytes: &[u8]) -> String {
         }
         let mut wide = vec![0u16; needed as usize];
         let written = MultiByteToWideChar(
-            CP_ACP,
-            MB_ERR_INVALID_CHARS,
+            CP_GBK,
+            0,
             bytes.as_ptr(),
             bytes.len() as i32,
             wide.as_mut_ptr(),
@@ -56,19 +76,19 @@ fn decode_ansi(bytes: &[u8]) -> String {
 }
 
 #[cfg(not(windows))]
-fn decode_ansi(bytes: &[u8]) -> String {
-    // 非 Windows 上没有 ANSI 代码页概念，直接按 UTF-8 解
+fn decode_gbk(bytes: &[u8]) -> String {
+    // 非 Windows 上没有 GBK 代码页，退回 UTF-8 解析
     String::from_utf8_lossy(bytes).to_string()
 }
 
-/// chcp 代码页前缀：Windows 控制台默认 GBK（936），中文输出直接按 UTF-8 解会乱码。
-/// 默认切到 UTF-8（65001）执行；用户显式选 GBK 时回切 936。
+/// chcp 代码页前缀：让子进程输出编码与我们的解码方式一致。
+/// 默认（未配置）与显式 GBK 都用 936；只有显式选 UTF-8 才切 65001。
 #[cfg(windows)]
 fn codepage_prefix(encoding: &Option<easyjob_domain::action::ScriptEncoding>) -> &'static str {
     use easyjob_domain::action::ScriptEncoding;
     match encoding {
-        Some(ScriptEncoding::Gbk) => "chcp 936 >nul & ",
-        _ => "chcp 65001 >nul & ",
+        Some(ScriptEncoding::Utf8) => "chcp 65001 >nul & ",
+        _ => "chcp 936 >nul & ",
     }
 }
 
@@ -166,13 +186,14 @@ impl CommandBuilder {
     }
 }
 
-/// PowerShell 内切换控制台输出编码：默认 UTF-8，GBK 时切回默认 OEM 代码页。
+/// PowerShell 内切换输出编码：默认（未配置）与显式 GBK 都用 936，
+/// 只有显式选 UTF-8 才切到 utf8，保证与解码方式一致。
 #[cfg(windows)]
 fn chcp_powershell_prefix(encoding: &Option<easyjob_domain::action::ScriptEncoding>) -> &'static str {
     use easyjob_domain::action::ScriptEncoding;
     match encoding {
-        Some(ScriptEncoding::Gbk) => "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(936)",
-        _ => "[Console]::OutputEncoding = [Text.Encoding]::utf8",
+        Some(ScriptEncoding::Utf8) => "[Console]::OutputEncoding = [Text.Encoding]::utf8",
+        _ => "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(936)",
     }
 }
 
