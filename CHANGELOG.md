@@ -4,6 +4,20 @@
 > 发布前请先更新本文件，写清该版本的变更。章节标题格式固定为 `## v<版本号>`，
 > 必须与 tag 名称（如 `v1.0.1`）去掉前缀 `v` 后对应，以便 workflow 自动提取。
 
+## v1.0.2
+
+### 修复
+- 修复 Windows 网络触发器事件方向颠倒的问题：禁用外网网卡曾误报「连接网络」，启用曾误报「断开网络」
+- Windows 网络事件改为按「整机能否出外网」判定，并统一处理有线网卡与 WiFi 通知；其它网卡或 WiFi 状态抖动不再凭空产生事件
+- 修复联网探测把「域名能解析」误判为「能上网」的问题，并消化启用网卡时 DHCP / 路由尚未就绪的过渡期
+- 修复 Windows 下 cmd / PowerShell 执行日志中文乱码
+
+### 变更
+- cmd / PowerShell 输出编码默认改为 GBK（代码页 936），可在动作配置中切换为 UTF-8
+- 项目版本号统一为 1.0.2（workspace 各 crate、桌面端 package.json、tauri.conf.json）
+- 新增 `.gitattributes` 与 `.editorconfig`，统一 macOS 与 Windows 的换行符、编码与文件权限位，避免纯换行符差异被识别为本地文件变更
+- `.gitignore` 补充 Windows 与 IDE 噪音文件（`Thumbs.db`、`desktop.ini`、`.idea/`、`*.iml`）
+
 ## v1.0.1
 
 ### 新增
