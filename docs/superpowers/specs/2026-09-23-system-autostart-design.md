@@ -43,7 +43,7 @@
 - Windows：`<安装目录>\data`（例如 `C:\Program Files\easyJob\data`）。安装时若安装包能力允许则直接建目录并放开 ACL；否则首次切换模式时提权修复。ACL 目标：`SYSTEM` 与 `Authenticated Users` 可读写（SQLite 需要写与建临时文件）。DB 路径 `<data>\easyjob.db`，锁 `<data>\agent.lock`，日志 `<data>\logs\`。
 - macOS：固定 `/Library/Application Support/EasyJob`。提权创建并放开给登录用户可读写（目录归 `root`，通过 ACL 或组权限保证登录用户可写）。DB、锁、日志与 socket 都在其下。
 - 解析规则：Windows 以服务安装时写入的 `--data-dir` 为准，桌面端按可执行文件所在目录推导同一路径，两者不一致时以服务注册值为准并报错提示重装。macOS 直接用固定路径。
-- 若安装包框架不支持自定义卸载弹窗，卸载默认保留 `data`，文档写明手动删除路径。
+- Windows NSIS 安装包使用 `perMachine` 安装模式，并通过 `installerHooks` 在卸载前询问是否保留 `<安装目录>\data`；若使用 MSI 或其他安装包，卸载默认保留，文档写明手动删除路径。
 
 ## 5. 系统 IPC 通道
 
@@ -67,14 +67,14 @@ Agent 新增服务形态：
 
 - plist 路径：`/Library/LaunchDaemons/com.easyjob.agent.plist`，归 `root:wheel`，权限 `644`。
 - 内容：`Label` 为 `com.easyjob.agent`，`RunAtLoad=true`，`KeepAlive=true`，`ProgramArguments` 为 agent 全路径加 `--daemon --data-dir /Library/Application Support/EasyJob`，标准输出与错误重定向到系统数据目录下的 `logs/daemon.out.log` 与 `logs/daemon.err.log`。
-- 安装：设置页选择开机模式后，桌面端弹系统密码框提权（`osascript ... with administrator privileges`），写入 plist 后执行 `launchctl bootstrap system/ ...`。停用时执行 `bootout` 并删除 plist。
+- 安装：设置页选择开机模式后，桌面端弹系统密码框提权（`osascript ... with administrator privileges`），先创建 `/Library/Application Support/EasyJob` 与 `logs` 并授予 `staff` 组读写，再写入 plist 并执行 `launchctl bootstrap system ...`。停用时执行 `bootout system ...` 并删除 plist。
 - 数据默认保留。macOS 没有统一卸载器，停用开机自启即卸载 daemon，数据目录不动，文档说明手动删除路径。
 
 ## 8. 桌面端改动
 
 后端（`apps/desktop/src-tauri`）：
 
-- 新增 Tauri 命令：`startup_get_mode`、`startup_set_mode(mode)`，以及内部用的服务安装状态查询。登录启动项继续用 `tauri-plugin-autostart`。
+- 新增 Tauri 命令：`service_status`、`service_install`、`service_uninstall`、`prepare_data_dir`。前端 `startupMode.ts` 编排三态切换与回滚；登录启动项继续用 `tauri-plugin-autostart`。
 - `AgentManager` 改为连接系统级 IPC。登录或禁用模式连不上才 spawn（带 `--data-dir`）。开机模式连不上只报错，绝不 spawn。记录本会话是否由桌面端 spawn，用于退出时决定是否 shutdown。
 - `ExitRequested`：仅当本会话 spawn 过 Agent 才 shutdown，否则只关闭窗口不断开服务。
 

@@ -1,8 +1,8 @@
 use easyjob_ipc::client::IpcClient;
 use easyjob_ipc::transport::system_ipc_path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -103,8 +103,7 @@ impl AgentManager {
         if should_spawn {
             if !self.allow_spawn() {
                 return Err(
-                    "系统服务未运行，请检查开机自启服务状态（桌面端不会另起 Agent）"
-                        .to_string(),
+                    "系统服务未运行，请检查开机自启服务状态（桌面端不会另起 Agent）".to_string(),
                 );
             }
             info!("easyjob-agent is not running; attempting to spawn daemon");

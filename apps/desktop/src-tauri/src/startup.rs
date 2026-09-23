@@ -2,15 +2,18 @@
 //!
 //! - Windows: Windows Service（`sc.exe` 查询，提权拉起 agent `--install-service`）
 //! - macOS: LaunchDaemon（plist 存在性 + `launchctl print`，提权写 plist 并 bootstrap）
+//!
 //! 登录项侧继续由前端 `tauri-plugin-autostart` 管理，本模块只管 service 侧。
 
+#[cfg(target_os = "macos")]
+use easyjob_platform::startup::{
+    macos_prepare_data_dir_script, MACOS_DAEMON_LABEL, MACOS_DAEMON_PLIST_PATH,
+};
 #[cfg(target_os = "windows")]
 use easyjob_platform::startup::{
-    parse_sc_query_state, windows_install_elevated_ps, windows_uninstall_elevated_ps,
-    WindowsServiceState,
+    parse_sc_query_state, windows_install_elevated_ps, windows_prepare_data_dir_elevated_ps,
+    windows_uninstall_elevated_ps, WindowsServiceState,
 };
-#[cfg(target_os = "macos")]
-use easyjob_platform::startup::{MACOS_DAEMON_LABEL, MACOS_DAEMON_PLIST_PATH};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -73,9 +76,7 @@ fn query_service_status() -> Result<ServiceStatus, String> {
         Ok(ServiceStatus {
             installed: plist_exists,
             running: plist_exists && print_ok,
-            data_dir: Some(
-                easyjob_platform::startup::MACOS_SYSTEM_DATA_DIR.to_string(),
-            ),
+            data_dir: Some(easyjob_platform::startup::MACOS_SYSTEM_DATA_DIR.to_string()),
         })
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -92,10 +93,7 @@ fn query_service_status() -> Result<ServiceStatus, String> {
 #[cfg(target_os = "windows")]
 fn query_windows_service_data_dir() -> Result<Option<String>, String> {
     let out = std::process::Command::new("sc.exe")
-        .args([
-            "qc",
-            easyjob_platform::startup::WINDOWS_SERVICE_NAME,
-        ])
+        .args(["qc", easyjob_platform::startup::WINDOWS_SERVICE_NAME])
         .output()
         .map_err(|e| format!("查询服务配置失败：{e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -172,11 +170,8 @@ fn install_service_impl() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let agent = find_agent_binary()?;
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-        let data_dir = easyjob_platform::startup::system_data_dir(exe_dir.as_deref());
-        std::fs::create_dir_all(&data_dir).map_err(|e| format!("创建系统数据目录失败：{e}"))?;
+        let data_dir = system_data_dir_for_desktop();
+        // 数据目录的创建与 ACL 由提权后的 agent `--install-service` 完成。
         let (program, args) = windows_install_elevated_ps(&agent, &data_dir);
         run_elevated(&program, &args, "安装系统服务")
     }
@@ -184,15 +179,71 @@ fn install_service_impl() -> Result<(), String> {
     {
         use easyjob_platform::startup::{macos_daemon_plist, macos_install_script};
         let agent = find_agent_binary()?;
-        let data_dir =
-            PathBuf::from(easyjob_platform::startup::MACOS_SYSTEM_DATA_DIR);
+        let data_dir = PathBuf::from(easyjob_platform::startup::MACOS_SYSTEM_DATA_DIR);
         let plist = macos_daemon_plist(&agent, &data_dir);
-        let script = macos_install_script(MACOS_DAEMON_PLIST_PATH, &plist);
+        let script = macos_install_script(MACOS_DAEMON_PLIST_PATH, &plist, &data_dir);
         run_macos_admin(&script, "安装开机自启服务")
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         Err("当前平台不支持开机自启".to_string())
+    }
+}
+
+fn system_data_dir_for_desktop() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    easyjob_platform::startup::system_data_dir(exe_dir.as_deref())
+}
+
+fn data_dir_writable(dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".easyjob_write_probe");
+    match std::fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 确保系统数据目录存在且登录用户可写；必要时提权一次。
+#[tauri::command]
+pub async fn prepare_data_dir() -> Result<ServiceStatus, String> {
+    prepare_data_dir_impl()?;
+    query_service_status()
+}
+
+fn prepare_data_dir_impl() -> Result<(), String> {
+    let data_dir = system_data_dir_for_desktop();
+    if data_dir_writable(&data_dir) {
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let (program, args) = windows_prepare_data_dir_elevated_ps(&data_dir);
+        run_elevated(&program, &args, "准备系统数据目录")?;
+        if !data_dir_writable(&data_dir) {
+            return Err("系统数据目录已创建，但当前用户仍无写入权限".to_string());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = macos_prepare_data_dir_script(&data_dir);
+        run_macos_admin(&script, "准备系统数据目录")?;
+        if !data_dir_writable(&data_dir) {
+            return Err("系统数据目录已创建，但当前用户仍无写入权限".to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Err("当前平台不支持系统级数据目录".to_string())
     }
 }
 
@@ -238,45 +289,81 @@ fn run_elevated(program: &str, args: &[String], action: &str) -> Result<(), Stri
     }
     Err(format!(
         "{action}失败：{}",
-        stderr.trim().to_string().chars().take(300).collect::<String>()
+        stderr
+            .trim()
+            .to_string()
+            .chars()
+            .take(300)
+            .collect::<String>()
     ))
 }
 
 #[cfg(target_os = "macos")]
 fn run_macos_admin(script: &str, action: &str) -> Result<(), String> {
+    // Base64 keeps the AppleScript source on one line and avoids quoting/escaping bugs.
+    let encoded = base64_encode(script.as_bytes());
+    let apple_script = format!(
+        "do shell script \"/bin/echo {encoded} | /usr/bin/base64 -D | /bin/sh\" with administrator privileges"
+    );
     let out = std::process::Command::new("/usr/bin/osascript")
-        .args([
-            "-e",
-            &format!(
-                "do shell script {} with administrator privileges",
-                sh_quote(script)
-            ),
-        ])
+        .args(["-e", &apple_script])
         .output()
         .map_err(|e| format!("{action}失败：{e}"))?;
     if out.status.success() {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if stderr.contains("User canceled") || out.status.code() == Some(1) && stderr.trim().is_empty() {
+    if stderr.contains("User canceled") || out.status.code() == Some(1) && stderr.trim().is_empty()
+    {
         return Err(format!("{action}已取消（用户拒绝提权）"));
     }
     Err(format!(
         "{action}失败：{}",
-        stderr.trim().to_string().chars().take(300).collect::<String>()
+        stderr
+            .trim()
+            .to_string()
+            .chars()
+            .take(300)
+            .collect::<String>()
     ))
 }
 
 #[cfg(target_os = "macos")]
-fn sh_quote(s: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            _ => out.push(ch),
-        }
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
-    out.push('"');
     out
+}
+
+#[cfg(target_os = "macos")]
+#[cfg(test)]
+mod base64_tests {
+    use super::base64_encode;
+
+    #[test]
+    fn encodes_known_values() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
 }

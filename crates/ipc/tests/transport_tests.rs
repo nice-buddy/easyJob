@@ -103,12 +103,48 @@ async fn test_ipc_system_socket_permissions_shared() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&socket_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o666, "shared system socket must be 0666, got {mode:o}");
+        let mode = std::fs::metadata(&socket_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o666,
+            "shared system socket must be 0666, got {mode:o}"
+        );
     }
     let client = IpcClient::connect(&socket_path).await.unwrap();
     let resp = client.call("ping", serde_json::json!({})).await.unwrap();
     assert_eq!(resp, serde_json::json!("pong"));
+}
+
+#[tokio::test]
+async fn test_ipc_shared_uses_external_event_tx() {
+    let dir = tempdir().unwrap();
+    let socket_path = dir.path().join("shared_events.sock");
+    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let server =
+        IpcServer::bind_shared_with_event_tx(&socket_path, Arc::new(EchoHandler), event_tx.clone())
+            .await
+            .unwrap();
+    tokio::spawn(server.run());
+
+    let client = IpcClient::connect(&socket_path).await.unwrap();
+    let mut event_rx = client.subscribe();
+    // Ensure the server has accepted the connection and registered the client.
+    let pong = client.call("ping", serde_json::json!({})).await.unwrap();
+    assert_eq!(pong, serde_json::json!("pong"));
+    event_tx
+        .send(IpcEvent::new(
+            "shared.event",
+            serde_json::json!({ "ok": true }),
+        ))
+        .unwrap();
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ev.event, "shared.event");
 }
 
 #[tokio::test]

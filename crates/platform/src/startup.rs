@@ -65,13 +65,7 @@ pub fn quote_ps_arg(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// Elevated install: returns (`powershell.exe`, args) with `-Verb RunAs -Wait`.
-pub fn windows_install_elevated_ps(agent_exe: &Path, data_dir: &Path) -> (String, Vec<String>) {
-    let script = format!(
-        "& {} --install-service --data-dir {}",
-        quote_ps_arg(&agent_exe.to_string_lossy()),
-        quote_ps_arg(&data_dir.to_string_lossy())
-    );
+fn elevated_ps(script: &str) -> (String, Vec<String>) {
     (
         String::from("powershell.exe"),
         vec![
@@ -80,13 +74,20 @@ pub fn windows_install_elevated_ps(agent_exe: &Path, data_dir: &Path) -> (String
             String::from("-Command"),
             format!(
                 "Start-Process powershell.exe -ArgumentList {} -Verb RunAs -Wait",
-                quote_ps_arg(&format!(
-                    "-NoProfile -NonInteractive -Command {}",
-                    script
-                ))
+                quote_ps_arg(&format!("-NoProfile -NonInteractive -Command {script}"))
             ),
         ],
     )
+}
+
+/// Elevated install: returns (`powershell.exe`, args) with `-Verb RunAs -Wait`.
+pub fn windows_install_elevated_ps(agent_exe: &Path, data_dir: &Path) -> (String, Vec<String>) {
+    let script = format!(
+        "& {} --install-service --data-dir {}",
+        quote_ps_arg(&agent_exe.to_string_lossy()),
+        quote_ps_arg(&data_dir.to_string_lossy())
+    );
+    elevated_ps(&script)
 }
 
 /// Elevated uninstall: returns (`powershell.exe`, args) with `-Verb RunAs -Wait`.
@@ -95,21 +96,18 @@ pub fn windows_uninstall_elevated_ps(agent_exe: &Path) -> (String, Vec<String>) 
         "& {} --uninstall-service",
         quote_ps_arg(&agent_exe.to_string_lossy())
     );
-    (
-        String::from("powershell.exe"),
-        vec![
-            String::from("-NoProfile"),
-            String::from("-NonInteractive"),
-            String::from("-Command"),
-            format!(
-                "Start-Process powershell.exe -ArgumentList {} -Verb RunAs -Wait",
-                quote_ps_arg(&format!(
-                    "-NoProfile -NonInteractive -Command {}",
-                    script
-                ))
-            ),
-        ],
-    )
+    elevated_ps(&script)
+}
+
+/// Elevated data-dir preparation: create dir and grant Authenticated Users modify.
+///
+/// `*S-1-5-11` is the well-known SID for Authenticated Users, avoiding localized names.
+pub fn windows_prepare_data_dir_elevated_ps(data_dir: &Path) -> (String, Vec<String>) {
+    let dir = quote_ps_arg(&data_dir.to_string_lossy());
+    let script = format!(
+        "New-Item -ItemType Directory -Force -Path {dir} | Out-Null; icacls {dir} /grant '*S-1-5-11:(OI)(CI)M' /T /C | Out-Null"
+    );
+    elevated_ps(&script)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +159,8 @@ pub fn macos_daemon_plist(agent_exe: &Path, data_dir: &Path) -> String {
             "    <true/>\n",
             "    <key>KeepAlive</key>\n",
             "    <true/>\n",
+            "    <key>Umask</key>\n",
+            "    <integer>2</integer>\n",
             "    <key>StandardOutPath</key>\n",
             "    <string>{out_log}</string>\n",
             "    <key>StandardErrorPath</key>\n",
@@ -178,11 +178,14 @@ pub fn macos_daemon_plist(agent_exe: &Path, data_dir: &Path) -> String {
 
 /// Shell script executed via `osascript ... with administrator privileges`.
 ///
-/// Writes the plist, fixes ownership/permissions, then bootstraps the daemon.
-pub fn macos_install_script(plist_path: &str, plist_content: &str) -> String {
+/// Prepares the system data dir, writes the plist, fixes ownership/permissions,
+/// then bootstraps the daemon.
+pub fn macos_install_script(plist_path: &str, plist_content: &str, data_dir: &Path) -> String {
+    let prepare = macos_prepare_data_dir_script(data_dir);
     format!(
         concat!(
             "set -e\n",
+            "{prepare}\n",
             "PLIST_PATH={plist_q}\n",
             "mkdir -p /Library/LaunchDaemons\n",
             "cat > \"$PLIST_PATH\" <<'EASYJOB_PLIST_EOF'\n",
@@ -190,11 +193,27 @@ pub fn macos_install_script(plist_path: &str, plist_content: &str) -> String {
             "EASYJOB_PLIST_EOF\n",
             "chown root:wheel \"$PLIST_PATH\"\n",
             "chmod 644 \"$PLIST_PATH\"\n",
-            "/bin/launchctl bootout system/\"$PLIST_PATH\" 2>/dev/null || true\n",
-            "/bin/launchctl bootstrap system/ \"$PLIST_PATH\"\n",
+            "/bin/launchctl bootout system \"$PLIST_PATH\" 2>/dev/null || true\n",
+            "/bin/launchctl bootstrap system \"$PLIST_PATH\"\n",
         ),
+        prepare = prepare.trim_end(),
         plist_q = sh_single_quote(plist_path),
         content = plist_content.trim_end(),
+    )
+}
+
+/// Shell script that creates the system data dir and grants `staff` group access.
+pub fn macos_prepare_data_dir_script(data_dir: &Path) -> String {
+    let dir = sh_single_quote(&data_dir.to_string_lossy());
+    format!(
+        concat!(
+            "DATA_DIR={dir}\n",
+            "mkdir -p \"$DATA_DIR/logs\"\n",
+            "chown -R root:staff \"$DATA_DIR\"\n",
+            "chmod 775 \"$DATA_DIR\" \"$DATA_DIR/logs\"\n",
+            "chmod -R g+rwX \"$DATA_DIR\"\n",
+        ),
+        dir = dir,
     )
 }
 
@@ -204,7 +223,7 @@ pub fn macos_uninstall_script(plist_path: &str) -> String {
         concat!(
             "set -e\n",
             "PLIST_PATH={plist_q}\n",
-            "/bin/launchctl bootout system/\"$PLIST_PATH\" 2>/dev/null || true\n",
+            "/bin/launchctl bootout system \"$PLIST_PATH\" 2>/dev/null || true\n",
             "rm -f \"$PLIST_PATH\"\n",
         ),
         plist_q = sh_single_quote(plist_path),

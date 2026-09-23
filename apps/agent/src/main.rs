@@ -85,9 +85,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Starting easyJob Agent Daemon v{}",
                 env!("CARGO_PKG_VERSION")
             );
-            // 系统数据目录恒为共享通道：登录后的桌面端以普通用户身份连接。
+            // macOS/Windows 的系统数据目录使用共享通道，登录后的桌面端以普通用户身份连接。
+            // 其他平台保持原有的私有 socket 行为，避免权限回退。
+            let shared = cfg!(any(target_os = "macos", target_os = "windows"));
             let service =
-                AgentService::init_shared(&db_url, &ipc_path, cli.max_concurrent, true).await?;
+                AgentService::init_shared(&db_url, &ipc_path, cli.max_concurrent, shared).await?;
 
             tokio::select! {
                 res = service.run() => {
@@ -105,21 +107,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
+fn install_service_cmd(_data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    Err("`--install-service` 仅在 Windows 上支持".into())
+}
+
+#[cfg(target_os = "windows")]
 fn install_service_cmd(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = data_dir;
-        return Err("`--install-service` 仅在 Windows 上支持".into());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use easyjob_platform::startup::{
-            windows_service_image_path, WINDOWS_SERVICE_DISPLAY_NAME, WINDOWS_SERVICE_NAME,
-        };
-        let data_dir = resolve_data_dir(data_dir);
-        std::fs::create_dir_all(&data_dir)?;
-        let agent_exe = std::env::current_exe()?;
-        let image = windows_service_image_path(&agent_exe, &data_dir);
+    use easyjob_platform::startup::{
+        parse_sc_query_state, windows_service_image_path, WindowsServiceState,
+        WINDOWS_SERVICE_DISPLAY_NAME, WINDOWS_SERVICE_NAME,
+    };
+    let data_dir = resolve_data_dir(data_dir);
+    std::fs::create_dir_all(data_dir.join("logs"))?;
+    grant_authenticated_users_modify(&data_dir)?;
+    let agent_exe = std::env::current_exe()?;
+    let image = windows_service_image_path(&agent_exe, &data_dir);
+    let state = sc_query_state()?;
+    if state == WindowsServiceState::NotInstalled {
         run_elevated_sc(&[
             "create",
             WINDOWS_SERVICE_NAME,
@@ -130,36 +135,112 @@ fn install_service_cmd(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::err
             "obj=",
             "LocalSystem",
         ])?;
-        // 失败自动重启：5 秒后重启服务。
-        let _ = run_elevated_sc(&[
-            "failure",
+    } else {
+        run_elevated_sc(&[
+            "config",
             WINDOWS_SERVICE_NAME,
-            "reset=",
-            "0",
-            "actions=",
-            "restart/5000",
-        ]);
-        run_elevated_sc(&["start", WINDOWS_SERVICE_NAME])?;
-        println!("Windows 服务已安装并启动。");
-        Ok(())
+            &format!("binPath= {image}"),
+            "start=",
+            "auto",
+            "obj=",
+            "LocalSystem",
+        ])?;
     }
+    // 失败自动重启：5 秒后重启服务。
+    let _ = run_elevated_sc(&[
+        "failure",
+        WINDOWS_SERVICE_NAME,
+        "reset=",
+        "0",
+        "actions=",
+        "restart/5000",
+    ]);
+    // 已在运行时 sc start 会报错，视为成功。
+    let _ = run_elevated_sc(&["start", WINDOWS_SERVICE_NAME]);
+    if sc_query_state()? != WindowsServiceState::Running {
+        return Err("Windows 服务已安装，但未能进入运行状态".into());
+    }
+    println!("Windows 服务已安装并启动。");
+    Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn uninstall_service_cmd() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        return Err("`--uninstall-service` 仅在 Windows 上支持".into());
+    Err("`--uninstall-service` 仅在 Windows 上支持".into())
+}
+
+#[cfg(target_os = "windows")]
+fn uninstall_service_cmd() -> Result<(), Box<dyn std::error::Error>> {
+    use easyjob_platform::startup::{WindowsServiceState, WINDOWS_SERVICE_NAME};
+    if sc_query_state()? == WindowsServiceState::NotInstalled {
+        return Ok(());
     }
-    #[cfg(target_os = "windows")]
-    {
-        use easyjob_platform::startup::WINDOWS_SERVICE_NAME;
-        // 先停后删；停止失败不阻断删除。
-        let _ = run_elevated_sc(&["stop", WINDOWS_SERVICE_NAME]);
-        std::thread::sleep(std::time::Duration::from_millis(800));
-        run_elevated_sc(&["delete", WINDOWS_SERVICE_NAME])?;
-        println!("Windows 服务已卸载。");
-        Ok(())
+    let _ = run_elevated_sc(&["stop", WINDOWS_SERVICE_NAME]);
+    for _ in 0..20 {
+        if sc_query_state()? == WindowsServiceState::Stopped {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
+    run_elevated_sc(&["delete", WINDOWS_SERVICE_NAME])?;
+    println!("Windows 服务已卸载。");
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn sc_query_state(
+) -> Result<easyjob_platform::startup::WindowsServiceState, Box<dyn std::error::Error>> {
+    use easyjob_platform::startup::{parse_sc_query_state, WINDOWS_SERVICE_NAME};
+    let out = run_sc(&["query", WINDOWS_SERVICE_NAME])?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(parse_sc_query_state(&text))
+}
+
+#[cfg(target_os = "windows")]
+fn run_sc(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut cmd = std::process::Command::new("sc.exe");
+    cmd.args(args);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    Ok(cmd.output()?)
+}
+
+#[cfg(target_os = "windows")]
+fn run_elevated_sc(args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+    let out = run_sc(args)?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "sc.exe {} 执行失败：{} {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+    .into())
+}
+
+/// 授予 Authenticated Users 对系统数据目录的修改权限，登录用户才能连上服务并读写数据。
+#[cfg(target_os = "windows")]
+fn grant_authenticated_users_modify(
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let out = std::process::Command::new("icacls")
+        .arg(data_dir)
+        .args(["/grant", "*S-1-5-11:(OI)(CI)M", "/T", "/C"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!("icacls 授权失败：{}", String::from_utf8_lossy(&out.stdout)).into())
 }
 
 /// NOTE: install/uninstall 由桌面端提权拉起（UAC），此处假设已提权，直接调 sc.exe。
@@ -183,106 +264,116 @@ fn run_elevated_sc(args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "windows")]
+struct WindowsServiceConfig {
+    db_url: String,
+    ipc_path: PathBuf,
+    max_concurrent: usize,
+}
+
+#[cfg(target_os = "windows")]
+static WINDOWS_SERVICE_CONFIG: std::sync::OnceLock<WindowsServiceConfig> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+windows_service::define_windows_service!(ffi_service_main, service_main_inner);
+
+#[cfg(target_os = "windows")]
+fn service_main_inner(_args: Vec<std::ffi::OsString>) {
+    use easyjob_platform::startup::WINDOWS_SERVICE_NAME;
+    use windows_service::{
+        service::{
+            ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+            ServiceType,
+        },
+        service_control_handler::{self, ServiceControlHandlerResult},
+    };
+
+    let Some(config) = WINDOWS_SERVICE_CONFIG.get() else {
+        eprintln!("Windows 服务配置缺失，无法启动");
+        return;
+    };
+    let db_url = config.db_url.clone();
+    let ipc_path = config.ipc_path.clone();
+    let max_concurrent = config.max_concurrent;
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("创建 Tokio runtime 失败：{e}");
+            return;
+        }
+    };
+    rt.block_on(async move {
+        let lock_path = ipc_path
+            .parent()
+            .map(|d| d.join("agent.lock"))
+            .unwrap_or_else(|| PathBuf::from("agent.lock"));
+        let Ok(outcome) = SingleInstanceLock::acquire(&lock_path, &ipc_path).await else {
+            return;
+        };
+        let LockOutcome::Acquired(_lock) = outcome else {
+            // 已有实例在跑：不重复启动，直接退出由 SCM 处理。
+            return;
+        };
+        let service =
+            match AgentService::init_shared(&db_url, &ipc_path, max_concurrent, true).await {
+                Ok(service) => service,
+                Err(e) => {
+                    eprintln!("AgentService 初始化失败：{e}");
+                    return;
+                }
+            };
+        let shutdown = service.shutdown_notify();
+        let status_handle = match service_control_handler::register(
+            WINDOWS_SERVICE_NAME,
+            move |event| match event {
+                ServiceControl::Stop | ServiceControl::Shutdown => {
+                    shutdown.notify_one();
+                    ServiceControlHandlerResult::NoError
+                }
+                _ => ServiceControlHandlerResult::NotImplemented,
+            },
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("注册服务控制回调失败：{e}");
+                return;
+            }
+        };
+        let set_state = |state: ServiceState| {
+            let _ = status_handle.set_service_status(ServiceStatus {
+                service_type: ServiceType::OWN_PROCESS,
+                current_state: state,
+                controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+                exit_code: ServiceExitCode::Win32(0),
+                checkpoint: 0,
+                wait_hint: std::time::Duration::from_secs(5),
+                process_id: None,
+            });
+        };
+        set_state(ServiceState::Running);
+        if let Err(e) = service.run().await {
+            eprintln!("Agent 服务运行失败：{e}");
+        }
+        set_state(ServiceState::Stopped);
+    });
+}
+
+#[cfg(target_os = "windows")]
 fn run_as_windows_service(
     db_url: &str,
     ipc_path: &std::path::Path,
     max_concurrent: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use easyjob_platform::startup::WINDOWS_SERVICE_NAME;
-    use std::ffi::OsString;
-    use windows_service::{
-        define_windows_service,
-        service::{
-            ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-            ServiceType,
-        },
-        service_control_handler::{self, ServiceControlHandlerResult},
-        service_dispatcher,
-    };
-
-    let db_url = db_url.to_string();
-    let ipc_path = ipc_path.to_path_buf();
-    define_windows_service!(ffi_service_main, service_main_inner);
-
-    fn service_main_inner(
-        _args: Vec<OsString>,
-        db_url: String,
-        ipc_path: std::path::PathBuf,
-        max_concurrent: usize,
-    ) {
-        let rt = match tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(e) => {
-                eprintln!("创建 Tokio runtime 失败：{e}");
-                return;
-            }
-        };
-        rt.block_on(async move {
-            let status_handle = match service_control_handler::register(
-                WINDOWS_SERVICE_NAME,
-                move |event| match event {
-                    ServiceControl::Stop | ServiceControl::Shutdown => {
-                        ServiceControlHandlerResult::NoError
-                    }
-                    _ => ServiceControlHandlerResult::NotImplemented,
-                },
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("注册服务控制回调失败：{e}");
-                    return;
-                }
-            };
-            let set_state = |state: ServiceState| {
-                let _ = status_handle.set_service_status(ServiceStatus {
-                    service_type: ServiceType::OWN_PROCESS,
-                    current_state: state,
-                    controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-                    exit_code: ServiceExitCode::Win32(0),
-                    checkpoint: 0,
-                    wait_hint: std::time::Duration::from_secs(5),
-                    process_id: None,
-                });
-            };
-            set_state(ServiceState::StartPending);
-            let lock_path = ipc_path
-                .parent()
-                .map(|d| d.join("agent.lock"))
-                .unwrap_or_else(|| std::path::PathBuf::from("agent.lock"));
-            let Ok(outcome) =
-                SingleInstanceLock::acquire(&lock_path, &ipc_path).await
-            else {
-                set_state(ServiceState::Stopped);
-                return;
-            };
-            let LockOutcome::Acquired(_lock) = outcome else {
-                // 已有实例在跑：直接报告 Running 后退出，避免 SCM 反复重启。
-                set_state(ServiceState::Running);
-                set_state(ServiceState::Stopped);
-                return;
-            };
-            match AgentService::init_shared(&db_url, &ipc_path, max_concurrent, true).await {
-                Ok(service) => {
-                    set_state(ServiceState::Running);
-                    // SCM stop 通过“关闭控制通道”感知：轮询服务状态太重，
-                    // 这里用 ctrl_c 在服务语境下收不到，因此用一个永不完成的
-                    // pending + SCM 回调里直接 exit 的简化语义。
-                    // 更稳妥的做法是回调里 notify shutdown；本期先保证 stop
-                    // 能结束进程，由 SCM 的 failure-actions 负责拉起。
-                    let _ = service.run().await;
-                    set_state(ServiceState::Stopped);
-                }
-                Err(e) => {
-                    eprintln!("AgentService 初始化失败：{e}");
-                    set_state(ServiceState::Stopped);
-                }
-            }
-        });
-    }
-
-    service_dispatcher::start(WINDOWS_SERVICE_NAME, ffi_service_main)?;
+    let _ = WINDOWS_SERVICE_CONFIG.set(WindowsServiceConfig {
+        db_url: db_url.to_string(),
+        ipc_path: ipc_path.to_path_buf(),
+        max_concurrent,
+    });
+    windows_service::service_dispatcher::start(WINDOWS_SERVICE_NAME, ffi_service_main)?;
     Ok(())
 }

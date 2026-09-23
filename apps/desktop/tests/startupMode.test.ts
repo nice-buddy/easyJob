@@ -13,6 +13,9 @@ describe('deriveMode', () => {
   it('service running wins boot', () => {
     expect(deriveMode({ running: true }, true)).toBe('boot');
   });
+  it('installed but stopped still maps boot', () => {
+    expect(deriveMode({ installed: true, running: false }, false)).toBe('boot');
+  });
   it('login item only maps login', () => {
     expect(deriveMode({ running: false }, true)).toBe('login');
   });

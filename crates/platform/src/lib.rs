@@ -1,6 +1,6 @@
 pub mod notification;
-pub mod startup;
 pub mod process;
+pub mod startup;
 #[cfg(unix)]
 pub mod unix;
 #[cfg(windows)]

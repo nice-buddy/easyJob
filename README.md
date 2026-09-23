@@ -76,7 +76,7 @@
 - **三选一自启模式**：`开机自启` / `登录后自启` / `不自启`，三者互斥，切换失败自动回滚。
 - **开机自启（用户未登录也运行）**：Windows 使用 Windows Service（`easyJobAgent`，以 `LocalSystem` 自动启动）；macOS 使用 LaunchDaemon（`/Library/LaunchDaemons/com.easyjob.agent.plist`，`RunAtLoad + KeepAlive`）。任务以 `SYSTEM` / `root` 身份执行，无桌面与用户环境，需要管理员权限安装。
 - **登录后自启**：Windows 沿用登录启动项（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`），macOS 沿用用户级 LaunchAgent；用户登录后静默启动并最小化到托盘（`--minimized`）。任务计划程序仍禁止用于业务调度。
-- **统一系统数据目录**：Windows 为 `<安装目录>\data`，macOS 为 `/Library/Application Support/EasyJob`；`~/.easyjob` 不再使用，旧数据请用任务导出导入手动迁移或丢弃。Windows 卸载时默认保留 `data`（安装包若不支持保留提示，请手动备份后删除）。
+- **统一系统数据目录**：Windows 为 `<安装目录>\data`，macOS 为 `/Library/Application Support/EasyJob`；`~/.easyjob` 不再使用，旧数据请用任务导出导入手动迁移或丢弃。首次启用非开机模式时可能需要一次管理员授权来创建并授权该目录。Windows NSIS 安装包卸载时会询问是否保留 `data`；若使用 MSI 或其他安装包，默认保留，请手动备份后删除。
 - **防误关常驻**：点击主窗口关闭按钮自动拦截并最小化至托盘，通过托盘菜单随时呼出主窗口或彻底退出应用。开机模式下退出桌面端不会关闭系统服务。
 
 ### 5. 高可靠性并发策略与故障恢复

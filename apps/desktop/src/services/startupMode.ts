@@ -10,8 +10,11 @@ export interface ServiceStatus {
 }
 
 /** 互斥推导：服务运行即开机模式；否则看登录项；都没有即禁用。 */
-export function deriveMode(svc: { running: boolean }, login: boolean): StartupMode {
-  if (svc.running) return 'boot';
+export function deriveMode(
+  svc: { installed?: boolean; running: boolean },
+  login: boolean,
+): StartupMode {
+  if (svc.installed || svc.running) return 'boot';
   if (login) return 'login';
   return 'disabled';
 }
@@ -50,6 +53,7 @@ export async function setStartupMode(mode: StartupMode): Promise<StartupMode> {
     }
     try {
       await waitServiceRunning();
+      await invoke('prepare_data_dir');
       await disable();
       return 'boot';
     } catch (e: any) {
@@ -64,6 +68,7 @@ export async function setStartupMode(mode: StartupMode): Promise<StartupMode> {
   if (mode === 'login') {
     try {
       await invoke('service_uninstall');
+      await invoke('prepare_data_dir');
     } catch (e: any) {
       throw new Error(`${e?.message || e}`);
     }
@@ -72,6 +77,7 @@ export async function setStartupMode(mode: StartupMode): Promise<StartupMode> {
   }
   try {
     await invoke('service_uninstall');
+    await invoke('prepare_data_dir');
   } catch (e: any) {
     throw new Error(`${e?.message || e}`);
   }

@@ -1,8 +1,8 @@
 pub mod agent_manager;
 pub mod commands;
-pub mod startup;
 pub mod events;
 pub mod macos_notification;
+pub mod startup;
 pub mod tray;
 
 use agent_manager::AgentManager;
@@ -49,10 +49,11 @@ pub fn run() {
     let manager_for_events = agent_manager.clone();
     let manager_for_exit = agent_manager.clone();
 
-    // 开机自启模式下桌面端只做系统服务的客户端：禁止 spawn，退出时不 shutdown。
+    // 系统服务一旦安装，桌面端只做客户端：即使服务暂时未运行，
+    // 也绝不另起一个用户态 Agent 去争抢系统数据目录。
     {
         let st = startup::service_status_sync_fallback();
-        manager_for_exit.set_allow_spawn(!(st.installed && st.running));
+        manager_for_exit.set_allow_spawn(!st.installed);
     }
     let builder = tauri::Builder::default();
     let last_notification_time = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
@@ -112,6 +113,7 @@ pub fn run() {
             startup::service_status,
             startup::service_install,
             startup::service_uninstall,
+            startup::prepare_data_dir,
             get_system_settings,
             save_system_settings,
             task_overview,

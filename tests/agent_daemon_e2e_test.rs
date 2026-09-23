@@ -41,7 +41,7 @@ async fn test_full_agent_daemon_ipc_lifecycle() {
         .call("agent.status", serde_json::json!({}))
         .await
         .expect("agent.status failed");
-    assert_eq!(status["version"], "0.1.0");
+    assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(status["active_tasks"], 0);
     assert_eq!(status["running_executions"], 0);
     assert!(status["uptime_secs"].is_number());
@@ -249,7 +249,7 @@ async fn test_agent_binary_already_running_exits_cleanly() {
         .call("agent.status", serde_json::json!({}))
         .await
         .expect("Check primary status");
-    assert_eq!(status["version"], "0.1.0");
+    assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
 
     // Launch binary pointing to same data-dir; it should detect already running and exit 0
     let binary_path = agent_binary_path();

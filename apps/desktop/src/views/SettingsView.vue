@@ -223,7 +223,10 @@ async function handleStartupModeChange(value: StartupMode) {
               :key="opt.value"
               :value="opt.value"
             >
-              {{ opt.label }}
+              <span class="flex flex-col">
+                <span>{{ opt.label }}</span>
+                <span class="text-xs text-slate-500 dark:text-zinc-400">{{ opt.desc }}</span>
+              </span>
             </NRadio>
           </div>
         </NRadioGroup>

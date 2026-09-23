@@ -4,6 +4,21 @@
 > 发布前请先更新本文件，写清该版本的变更。章节标题格式固定为 `## v<版本号>`，
 > 必须与 tag 名称（如 `v1.0.1`）去掉前缀 `v` 后对应，以便 workflow 自动提取。
 
+## Unreleased
+
+### 新增
+- 系统设置新增自启动三选一：开机自启 / 登录后自启 / 不自启
+- 开机自启支持用户未登录时运行任务：Windows 使用 Windows Service（SYSTEM），macOS 使用 LaunchDaemon（root）
+- 系统级统一数据目录：Windows `<安装目录>\data`，macOS `/Library/Application Support/EasyJob`；`~/.easyjob` 不再使用
+- Windows NSIS 安装包卸载时询问是否保留 `data`
+
+### 变更
+- Agent 新增 `--service` / `--install-service` / `--uninstall-service` 与系统级 IPC 通道
+- 桌面端在系统服务已安装时只做 IPC 客户端，退出时不关闭系统服务
+
+### 测试
+- 新增系统数据目录、服务参数、plist、IPC 共享通道与自启模式状态机测试
+
 ## v1.0.2
 
 ### 修复

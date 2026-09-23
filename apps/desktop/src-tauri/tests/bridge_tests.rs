@@ -386,3 +386,10 @@ fn test_agent_manager_default_allows_spawn() {
     assert!(manager.allow_spawn());
     assert!(!manager.spawned_by_us());
 }
+
+#[test]
+fn test_agent_manager_boot_mode_disables_spawn() {
+    let manager = AgentManager::new();
+    manager.set_allow_spawn(false);
+    assert!(!manager.allow_spawn());
+}

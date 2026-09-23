@@ -32,6 +32,7 @@ fn test_macos_plist_has_run_at_load_and_keep_alive() {
     assert!(plist.contains("com.easyjob.agent"));
     assert!(plist.contains("<key>RunAtLoad</key>"));
     assert!(plist.contains("<key>KeepAlive</key>"));
+    assert!(plist.contains("<key>Umask</key>"));
     assert!(plist.contains("--data-dir"));
 }
 
@@ -75,7 +76,26 @@ fn test_macos_install_script_bootstraps() {
     let script = macos_install_script(
         "/Library/LaunchDaemons/com.easyjob.agent.plist",
         "PLIST",
+        Path::new("/Library/Application Support/EasyJob"),
     );
-    assert!(script.contains("bootstrap system/"), "{script}");
+    assert!(script.contains("bootstrap system "), "{script}");
     assert!(script.contains("chown root:wheel"), "{script}");
+    assert!(script.contains("mkdir -p \"$DATA_DIR/logs\""), "{script}");
+}
+
+#[test]
+fn test_windows_prepare_data_dir_grants_authenticated_users() {
+    let (program, args) =
+        windows_prepare_data_dir_elevated_ps(Path::new("C:\\Program Files\\easyJob\\data"));
+    assert_eq!(program, "powershell.exe");
+    let joined = args.join(" ");
+    assert!(joined.contains("S-1-5-11"), "{joined}");
+    assert!(joined.contains("icacls"), "{joined}");
+}
+
+#[test]
+fn test_macos_prepare_data_dir_script_grants_staff() {
+    let script = macos_prepare_data_dir_script(Path::new("/Library/Application Support/EasyJob"));
+    assert!(script.contains("chown -R root:staff"), "{script}");
+    assert!(script.contains("g+rwX"), "{script}");
 }

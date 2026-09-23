@@ -1,6 +1,6 @@
 # 系统级开机自启 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 实现用户未登录也可运行任务的系统级开机自启，设置页提供开机自启 / 登录后自启 / 不自启三选一，数据统一到系统级目录。
 
@@ -45,7 +45,7 @@
 - Consumes: 无（`std::path::{Path, PathBuf}`）。
 - Produces: `pub fn system_ipc_path() -> PathBuf`；`pub fn ipc_path_for_data_dir(data_dir: &Path) -> PathBuf`；`default_ipc_path()` 行为改为返回系统级路径（保持签名兼容调用方）。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // crates/ipc/tests/transport_tests.rs
@@ -85,12 +85,12 @@ fn test_ipc_path_for_data_dir_windows_ignores_dir() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p easyjob-ipc --test transport_tests test_system_ipc_path_is_fixed`
 Expected: FAIL with "unresolved import" / "function not found".
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```rust
 // crates/ipc/src/transport.rs
@@ -145,12 +145,12 @@ pub fn default_ipc_path() -> PathBuf {
 
 同时更新 `test_default_ipc_path` 旧断言：unix 改为断言以后缀 `EasyJob/easyjob.sock` 结尾（macOS）——注意该测试在 macOS CI 跑，旧断言 `.easyjob/easyjob.sock` 必须改掉；windows 改为精确等于 `\\.\pipe\easyjob-system`。
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p easyjob-ipc`
 Expected: PASS（全部用例）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ipc/src/transport.rs crates/ipc/tests/transport_tests.rs
@@ -185,7 +185,7 @@ git commit -m "feat(ipc): 系统级固定 IPC 通道，Windows 管道名固定�
   - `pub fn macos_install_script(plist_path: &str, plist_content: &str) -> String`（供 `osascript ... with administrator privileges` 执行的 shell 脚本，调用方负责转义外层引号）
   - `pub fn quote_ps_arg(s: &str) -> String`（单引号包裹，内部单引号双写）
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 // crates/platform/tests/startup_tests.rs
@@ -232,12 +232,12 @@ fn test_ps_arg_quoting() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p easyjob-platform --test startup_tests`
 Expected: FAIL（模块不存在）。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 按 Interfaces 签名实现 `crates/platform/src/startup.rs`，要点：
 - `system_data_dir`: `#[cfg(target_os = "windows")]` 用 `exe_dir.join("data")`（`exe_dir=None` 时回退到当前 exe 所在目录）；`#[cfg(target_os = "macos")]` 返回固定路径忽略参数；其他平台返回 `~/.easyjob`。
@@ -246,12 +246,12 @@ Expected: FAIL（模块不存在）。
 - `macos_daemon_plist` 手写 XML，`ProgramArguments` 依次为 agent 路径、`--daemon`、`--data-dir`、数据目录；`StandardOutPath`/`StandardErrorPath` 指向 `<data>/logs/daemon.out.log` 等。
 - 所有函数不得执行系统调用（纯拼装），提权执行由桌面端 Task 5 负责。
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p easyjob-platform`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/platform/src/startup.rs crates/platform/src/lib.rs crates/platform/tests/startup_tests.rs
@@ -270,7 +270,7 @@ git commit -m "feat(platform): 启动模式核心纯函数（服务参数、plis
 - Consumes: Task 1 的 `ipc_path_for_data_dir`；Task 2 的 `system_data_dir`（仅测试里拼路径）。
 - Produces: `IpcServer::bind` 系统路径行为——Unix 下若 socket 父目录为系统目录则权限放宽到 `0o666`（登录用户可读写），否则保持 `0o600`；Windows 保持 `ServerOptions` 创建（ACL 若 API 不支持则不阻塞，以安装时 `icacls` 兜底）。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[tokio::test]
@@ -294,12 +294,12 @@ async fn test_ipc_system_socket_permissions_shared() {
 
 注意：该测试要求 `bind` 对**所有**路径都放宽，还是只对系统路径放宽，Task 3 实现时二选一定死。若选“只对系统路径放宽”，则测试里需把 socket 建在 Task 2 的 `system_data_dir` 下（macOS CI 即 `/Library/...` 写不进去，改用 `ipc_path_for_data_dir(dir.path())` 并给 `bind` 加显式 `bind_shared` 入口）。决策：给 `IpcServer` 加 `pub async fn bind_shared(path, handler)`，系统通道统一走它；普通 `bind` 保持 `0o600`。旧测试保持 0600 断言不变，新测试走 `bind_shared` 断言 `0o666`。
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p easyjob-ipc --test transport_tests test_ipc_system_socket_permissions_shared`
 Expected: FAIL（`bind_shared` 不存在）。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```rust
 impl IpcServer {
@@ -313,12 +313,12 @@ impl IpcServer {
 
 `bind` / `bind_with_event_tx` 内部转调 `bind_with_event_tx_and_mode(..., SocketMode::Private)`；unix 分支按 mode 设 `0o600` / `0o666`。Windows 分支：Shared 模式暂与 Private 同行为（记录 `tracing::debug!`），真正 ACL 由安装步骤保证。
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p easyjob-ipc`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ipc/src/server.rs crates/ipc/tests/transport_tests.rs
@@ -338,7 +338,7 @@ git commit -m "feat(ipc): 系统通道 bind_shared，Unix 共享 socket 权限 0
 - Consumes: Task 1 (`ipc_path_for_data_dir`)，Task 2 (`system_data_dir`)，Task 3 (`bind_shared` 由 `AgentService::init` 调用方选择——决定：`main.rs` 里系统路径恒走 `bind_shared`？`AgentService::init` 内部调 `bind_with_event_tx`。最小改动方案：`main.rs` 计算 `is_system: bool`（data_dir == system_data_dir），把 flag 透传给 `AgentService::init(..., shared: bool)`，init 内按 flag 选 `bind` / `bind_shared`）。
 - Produces: CLI `--service`（Windows Service 前台入口）、`--install-service --data-dir <dir>`、`--uninstall-service`；默认 data dir = `system_data_dir(exe_dir)`；`--service` 与 `--daemon` 互斥（clap `conflicts_with`）。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // apps/agent/tests/cli_tests.rs（新建）
@@ -354,7 +354,7 @@ fn test_service_and_daemon_conflict() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p easyjob-agent --test cli_tests`
 Expected: FAIL（ `--service` 参数不存在，clap 报 unknown argument，进程退出码非零但断言方向……注意：clap 对未知参数也会非零退出，测试会误 PASS。改为断言 stderr 包含 `--daemon` 冲突提示或先只跑 `--help` 包含 `--service`：`assert!(help.contains("--service"))`，此时必 FAIL）。
@@ -375,7 +375,7 @@ fn test_help_lists_service_flags() {
 }
 ```
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `main.rs` 改动：
 - clap 新增三个 flag；`--install-service` / `--uninstall-service` 为 `bool`，需要提权，由桌面端拉起。
@@ -386,12 +386,12 @@ fn test_help_lists_service_flags() {
 - macOS/Linux：`--daemon` 行为不变，只是默认 data dir 变了。
 - `AgentService::init` 加 `shared: bool` 参数，所有既有调用点（`service_tests.rs` 等）同步更新为 `false`。
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p easyjob-agent`
 Expected: PASS（macOS 本机跑；Windows Service 分支 `#[cfg(windows)]`，本机只验证 CLI 解析与 install 命令拼装单测）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/main.rs apps/agent/Cargo.toml apps/agent/src/service.rs apps/agent/tests/cli_tests.rs
@@ -417,7 +417,7 @@ git commit -m "feat(agent): Windows Service 形态与系统数据目录默认，
   - `pub struct StartupModeInfo { pub mode: StartupMode, pub detail: String }`（`Serialize`）
   - `AgentManager::set_allow_spawn(&self, bool)`，`AgentManager::spawned_by_us(&self) -> bool`（内部 `AtomicBool`）。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // bridge_tests.rs 追加
@@ -433,12 +433,12 @@ fn test_derive_mode_boot_requires_login_item_absent() {
 
 `derive_mode(service_running: bool, login_enabled: bool) -> StartupModeInfo` 为纯函数，方便单测。
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p easyjob-desktop --test bridge_tests test_derive_mode_boot_requires_login_item_absent`
 Expected: FAIL（`startup` 模块不存在）。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `startup.rs` 要点：
 - `startup_get_mode`：Windows 跑 `sc query easyJobAgent` → `parse_sc_query_state`；macOS 查 plist 存在 + `launchctl print system/com.easyjob.agent` 退出码；再查登录项 `is_enabled`（经 plugin 的 Rust 侧？plugin 命令走前端 JS，前端把 login 状态传进来或后端调 auto-launch？最小方案：后端只判定 service 侧，login 侧由前端 plugin 查询后一起拼——决定：`startup_get_mode` 返回 `{ service: ... }`，最终 mode 由前端 `startupMode.ts` 综合判定。把 `derive_mode` 放前端 TS 做纯函数，Rust 只暴露 `service_status()` + `set_service_enabled(bool)`。修正 Step 1 测试对象：Rust 侧单测改为 `parse` 相关已在 Task 2 覆盖，本 Task Rust 测试改为提权命令拼装调用 Task 2 函数的集成断言 + `AgentManager` 默认 `allow_spawn=true`。）
@@ -448,12 +448,12 @@ Expected: FAIL（`startup` 模块不存在）。
 - `AgentManager`：`ipc_path` 默认 `system_ipc_path()`；`ensure_connected` 仅当 `allow_spawn` 才 spawn；spawn 成功后置 `spawned_by_us=true`；spawn 命令追加 `--data-dir <system_data_dir>`；`restart_agent` 在 `!allow_spawn` 时返回中文错误“开机自启模式下请通过系统服务管理器重启”。
 - `lib.rs`：setup 里调 `service_status`（同步阻塞版，失败视为未安装）设 `allow_spawn = mode != Boot`；`ExitRequested` 仅当 `spawned_by_us` 为真才 `shutdown_agent`。
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p easyjob-desktop` 与 `cargo test --workspace`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/desktop/src-tauri/src/startup.rs apps/desktop/src-tauri/src/agent_manager.rs apps/desktop/src-tauri/src/lib.rs apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/tests/bridge_tests.rs
@@ -474,7 +474,7 @@ git commit -m "feat(desktop): 系统服务管理命令与 Agent 归属跟踪，�
 - Consumes: 后端 `service_status/service_install/service_uninstall`（`invoke`），前端 plugin `enable/disable/isEnabled`（登录项），`getAgentStatus`（就绪等待）。
 - Produces: `export type StartupMode = 'boot' | 'login' | 'disabled'`；`export async function getStartupMode(): Promise<StartupMode>`；`export async function setStartupMode(mode: StartupMode): Promise<StartupMode>`（内部先建新侧再清旧侧，失败回滚并抛中文错误）；`export function deriveMode(svc: {running: boolean}, login: boolean): StartupMode`（纯函数，单测锁定互斥表）。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // apps/desktop/tests/startupMode.test.ts
@@ -500,12 +500,12 @@ describe('deriveMode', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm --dir apps/desktop vitest run tests/startupMode.test.ts`
 Expected: FAIL（模块不存在）。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `startupMode.ts` 要点：
 - `getStartupMode`: `invoke('service_status')` + `isEnabled()` → `deriveMode`。任一失败抛中文错误。
@@ -515,12 +515,12 @@ Expected: FAIL（模块不存在）。
 - 保留旧 `autostart.ts` 的 `localStorage` 键做一次性迁移：`App.vue` 启动时若键不存在，先 `getStartupMode()`；若为 `disabled` 则 `setStartupMode('login')`（延续默认开启），然后写键。之后该键不再作为状态来源。
 - `SettingsView.vue`: `NRadioGroup` 三项 + 说明文案；开机项标注“需管理员权限，未登录以 SYSTEM / root 运行”；切换失败回滚 `v-model` 并 `message.error`。
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pnpm --dir apps/desktop test`
 Expected: PASS（全量 vitest）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/desktop/src/services/startupMode.ts apps/desktop/src/views/SettingsView.vue apps/desktop/src/App.vue apps/desktop/tests/startupMode.test.ts
@@ -536,11 +536,11 @@ git commit -m "feat(desktop): 自启三选一（开机/登录/禁用）与切换
 - Modify: `docs/superpowers/specs/2026-09-15-autostart-icon-and-settings-horizontal-design.md`（顶部加 supersede 注记，不改原文其余部分）
 - Modify: `.github/workflows/release.yml`（仅当安装包框架支持时加 data 目录/ACL/卸载提示；不支持则不改文件，把“默认保留 + 手动删除路径”写进 README。本 Task 先做文档部分，打包改动以实际框架能力为准、无能力则留 TODO？不允许 TODO——决定：本 Task 只做文档，若框架不支持则明确写“运行时提权修复兜底”，不碰 workflow。）
 
-- [ ] **Step 1: Write the failing check**：`rg -n "HKCU|LaunchAgent|Windows Service|LaunchDaemon" README.md` 必须同时命中四者，否则 FAIL。
-- [ ] **Step 2: Run**：当前 README 只命中前两者 → FAIL。
-- [ ] **Step 3: Implement**：重写自启章节。
-- [ ] **Step 4: Re-run rg**：四者皆命中。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Write the failing check**：`rg -n "HKCU|LaunchAgent|Windows Service|LaunchDaemon" README.md` 必须同时命中四者，否则 FAIL。
+- [x] **Step 2: Run**：当前 README 只命中前两者 → FAIL。
+- [x] **Step 3: Implement**：重写自启章节。
+- [x] **Step 4: Re-run rg**：四者皆命中。
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-09-15-autostart-icon-and-settings-horizontal-design.md
@@ -551,15 +551,15 @@ git commit -m "docs: 系统级开机自启说明与旧自启 spec  supersede 注
 
 ### Task 8: 全量验证
 
-- [ ] **Step 1**: Run `cargo test --workspace`，Expected: PASS。
-- [ ] **Step 2**: Run `pnpm --dir apps/desktop test`，Expected: PASS。
-- [ ] **Step 3**: Run `cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --check`，Expected: 无警告无 diff（有则修复后重跑）。
+- [x] **Step 1**: Run `cargo test --workspace`，Expected: PASS。
+- [x] **Step 2**: Run `pnpm --dir apps/desktop test`，Expected: PASS。
+- [x] **Step 3**: Run `cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --check`，Expected: 无警告无 diff（有则修复后重跑）。
 - [ ] **Step 4**: 手工矩阵（本机 macOS 可做部分；Windows 需真机/虚拟机，不在 CI 做）：
   1. 登录模式重启登录，确认托盘静默启动且任务正常。
   2. 切开机模式（提权），重启后不登录等待任务下一次触发，登录后在执行记录里看到未登录期间的执行。
   3. 切禁用，重启后确认不启动。
   4. Windows 卸载时确认保留数据弹窗（若安装包不支持，确认默认保留）。
-- [ ] **Step 5**: 更新 CHANGELOG（按仓库既有格式加一条），提交。
+- [x] **Step 5**: 更新 CHANGELOG（按仓库既有格式加一条），提交。
 
 ```bash
 git add CHANGELOG.md

@@ -128,11 +128,8 @@ impl AgentService {
             exec_cancel_token: exec_cancel_token.clone(),
         });
 
-        // NOTE: shared mode creates its own broadcast channel inside bind_shared.
-        // The handler keeps `event_tx` for trigger_now fan-out; run() re-shares
-        // the server broadcaster with subscribers via event_sender().
         let ipc_server = if shared {
-            IpcServer::bind_shared(ipc_path, handler.clone()).await?
+            IpcServer::bind_shared_with_event_tx(ipc_path, handler, event_tx).await?
         } else {
             IpcServer::bind_with_event_tx(ipc_path, handler, event_tx).await?
         };
@@ -183,6 +180,12 @@ impl AgentService {
 
     pub fn ipc_path(&self) -> &Path {
         &self.ipc_path
+    }
+
+    /// Shared shutdown signal: notifying it stops `run()` gracefully.
+    /// Used by the Windows Service control handler on SCM stop/shutdown.
+    pub fn shutdown_notify(&self) -> Arc<Notify> {
+        self.shutdown_notify.clone()
     }
 
     pub fn start_time(&self) -> Instant {

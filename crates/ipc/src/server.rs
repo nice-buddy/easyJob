@@ -11,6 +11,17 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::codec::{Framed, LinesCodec};
 use tracing::{error, info, warn};
 
+#[cfg(windows)]
+use std::ffi::c_void;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::LocalFree;
+#[cfg(windows)]
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
 #[async_trait]
 pub trait RequestHandler: Send + Sync {
     async fn handle_request(&self, req: IpcRequest) -> IpcResponse;
@@ -95,6 +106,8 @@ pub struct IpcServer {
     listener: tokio::net::UnixListener,
     #[cfg(windows)]
     pipe_instance: tokio::net::windows::named_pipe::NamedPipeServer,
+    #[cfg(windows)]
+    mode: SocketMode,
 }
 
 /// Socket visibility for Unix domain sockets.
@@ -106,10 +119,64 @@ enum SocketMode {
     Shared,
 }
 
+/// Create a named pipe instance, applying an explicit DACL for the system channel.
+///
+/// SDDL grants SYSTEM and Administrators full access, and Authenticated Users
+/// generic read/write, so logged-in desktop sessions can connect to the service.
+#[cfg(windows)]
+fn create_pipe_instance(
+    pipe_name: &str,
+    first: bool,
+    mode: SocketMode,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let mut options = ServerOptions::new();
+    options.first_pipe_instance(first);
+    if mode == SocketMode::Private {
+        return options.create(pipe_name);
+    }
+
+    let sddl: Vec<u16> = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)\0"
+        .encode_utf16()
+        .collect();
+    unsafe {
+        let mut descriptor: *mut c_void = std::ptr::null_mut();
+        let ok = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        );
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        let result = options.create_with_security_attributes_raw(
+            pipe_name,
+            &mut attributes as *mut _ as *mut c_void,
+        );
+        LocalFree(descriptor);
+        result
+    }
+}
+
 impl IpcServer {
     pub async fn bind(path: &Path, handler: Arc<dyn RequestHandler>) -> Result<Self> {
         let (event_tx, _) = broadcast::channel(1024);
         Self::bind_with_event_tx(path, handler, event_tx).await
+    }
+
+    /// System channel: Unix socket readable/writable by logged-in users.
+    pub async fn bind_shared_with_event_tx(
+        path: &Path,
+        handler: Arc<dyn RequestHandler>,
+        event_tx: broadcast::Sender<IpcEvent>,
+    ) -> Result<Self> {
+        Self::bind_with_event_tx_and_mode(path, handler, event_tx, SocketMode::Shared).await
     }
 
     /// System channel: Unix socket readable/writable by logged-in users.
@@ -159,17 +226,8 @@ impl IpcServer {
 
         #[cfg(windows)]
         let pipe_instance = {
-            use tokio::net::windows::named_pipe::ServerOptions;
             let pipe_name = path.to_string_lossy().to_string();
-            if mode == SocketMode::Shared {
-                tracing::debug!(
-                    "system named pipe uses default ACL; installer grants access via icacls"
-                );
-            }
-            ServerOptions::new()
-                .first_pipe_instance(true)
-                .create(&pipe_name)
-                .map_err(Error::Io)?
+            create_pipe_instance(&pipe_name, true, mode).map_err(Error::Io)?
         };
 
         let inner = Arc::new(IpcServerInner {
@@ -186,6 +244,8 @@ impl IpcServer {
             listener,
             #[cfg(windows)]
             pipe_instance,
+            #[cfg(windows)]
+            mode,
         })
     }
 
@@ -257,8 +317,8 @@ impl IpcServer {
 
         #[cfg(windows)]
         {
-            use tokio::net::windows::named_pipe::ServerOptions;
             let pipe_name = inner.path.to_string_lossy().to_string();
+            let mode = self.mode;
             info!("IPC Server listening on Named Pipe: {}", pipe_name);
 
             let mut server_instance = self.pipe_instance;
@@ -269,7 +329,7 @@ impl IpcServer {
                     break;
                 }
                 let connected_client = server_instance;
-                match ServerOptions::new().create(&pipe_name) {
+                match create_pipe_instance(&pipe_name, false, mode) {
                     Ok(next_instance) => {
                         server_instance = next_instance;
                     }
