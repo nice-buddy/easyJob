@@ -1,4 +1,5 @@
 pub mod notification;
+pub mod startup;
 pub mod process;
 #[cfg(unix)]
 pub mod unix;
