@@ -215,3 +215,47 @@ fn test_macos_launchd_bootstraps_generated_plist() {
         .unwrap()
         .contains("launchd-ok"));
 }
+
+#[test]
+fn test_windows_elevated_install_and_uninstall_commands() {
+    let install = windows_install_elevated_ps(
+        Path::new("C:\\Program Files\\easyJob\\easyjob-agent.exe"),
+        Path::new("C:\\Program Files\\easyJob\\data"),
+    );
+    assert_eq!(install.0, "powershell.exe");
+    let install_args = install.1.join(" ");
+    assert!(install_args.contains("Start-Process"), "{install_args}");
+    assert!(install_args.contains("-Verb RunAs"), "{install_args}");
+    assert!(install_args.contains("--install-service"), "{install_args}");
+    assert!(install_args.contains("--data-dir"), "{install_args}");
+
+    let uninstall =
+        windows_uninstall_elevated_ps(Path::new("C:\\Program Files\\easyJob\\easyjob-agent.exe"));
+    assert_eq!(uninstall.0, "powershell.exe");
+    let uninstall_args = uninstall.1.join(" ");
+    assert!(uninstall_args.contains("Start-Process"), "{uninstall_args}");
+    assert!(uninstall_args.contains("-Verb RunAs"), "{uninstall_args}");
+    assert!(
+        uninstall_args.contains("--uninstall-service"),
+        "{uninstall_args}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_macos_uninstall_script_passes_sh_syntax_check() {
+    let script = macos_uninstall_script("/Library/LaunchDaemons/com.easyjob.agent.plist");
+    let dir = tempfile::tempdir().unwrap();
+    let script_path = dir.path().join("uninstall.sh");
+    std::fs::write(&script_path, script).unwrap();
+    let out = std::process::Command::new("/bin/sh")
+        .args(["-n", script_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "sh -n failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
