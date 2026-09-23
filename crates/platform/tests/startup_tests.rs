@@ -144,3 +144,74 @@ fn test_macos_install_script_passes_sh_syntax_check() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires a user launchd session; run with --ignored"]
+fn test_macos_launchd_bootstraps_generated_plist() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    let logs_dir = data_dir.join("logs");
+    std::fs::create_dir_all(&logs_dir).unwrap();
+
+    let script_path = dir.path().join("fake-agent.sh");
+    std::fs::write(
+        &script_path,
+        "#!/bin/sh\nDATA=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--data-dir\" ]; then\n    shift\n    DATA=\"$1\"\n  fi\n  shift\ndone\necho launchd-ok > \"$DATA/launchd.out\"\nsleep 30\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    let label = format!("com.easyjob.agent.test.{}", std::process::id());
+    let plist_path = dir.path().join(format!("{label}.plist"));
+    std::fs::write(
+        &plist_path,
+        macos_daemon_plist_for_label(&label, &script_path, &data_dir),
+    )
+    .unwrap();
+
+    let domain = format!("gui/{}", unsafe { libc::getuid() });
+    let plist_arg = plist_path.to_string_lossy().to_string();
+    let bootstrap = std::process::Command::new("/bin/launchctl")
+        .args(["bootstrap", &domain, &plist_arg])
+        .output()
+        .unwrap();
+    assert!(
+        bootstrap.status.success(),
+        "launchctl bootstrap failed: {}{}",
+        String::from_utf8_lossy(&bootstrap.stdout),
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
+
+    struct BootoutGuard {
+        domain: String,
+        plist: String,
+    }
+    impl Drop for BootoutGuard {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("/bin/launchctl")
+                .args(["bootout", &self.domain, &self.plist])
+                .output();
+        }
+    }
+    let _guard = BootoutGuard {
+        domain,
+        plist: plist_arg,
+    };
+
+    let marker = data_dir.join("launchd.out");
+    for _ in 0..50 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(marker.exists(), "launchd did not start the generated plist");
+    assert!(std::fs::read_to_string(&marker)
+        .unwrap()
+        .contains("launchd-ok"));
+}

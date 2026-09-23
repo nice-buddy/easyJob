@@ -275,3 +275,100 @@ async fn test_agent_binary_already_running_exits_cleanly() {
     let _ = client.call("agent.shutdown", serde_json::json!({})).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), service_handle).await;
 }
+
+#[cfg(unix)]
+struct ChildGuard(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_agent_binary_daemon_with_system_data_dir_flag() {
+    let dir = tempdir().unwrap();
+    let socket_path = dir.path().join("easyjob.sock");
+    let binary_path = agent_binary_path();
+
+    let child = std::process::Command::new(binary_path)
+        .arg("--daemon")
+        .arg("--data-dir")
+        .arg(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn easyjob-agent --daemon");
+    let _guard = ChildGuard(child);
+
+    // Wait for the real daemon process to create its IPC socket.
+    let mut client = None;
+    for _ in 0..50 {
+        if let Ok(c) = IpcClient::connect(&socket_path).await {
+            client = Some(c);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let client = client.expect("daemon did not create IPC socket in time");
+
+    let status = client
+        .call("agent.status", serde_json::json!({}))
+        .await
+        .expect("agent.status via real daemon");
+    assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
+
+    let task_id = TaskId::new();
+    let task = Task {
+        id: task_id,
+        name: "real daemon binary job".to_string(),
+        description: None,
+        enabled: true,
+        triggers: vec![],
+        actions: vec![Action {
+            id: ActionId::new(),
+            task_id,
+            sequence: 1,
+            enabled: true,
+            kind: ActionKind::ExecuteShell {
+                command: "echo 'real daemon binary marker 24680'".to_string(),
+            },
+        }],
+        execution_policy: ExecutionPolicy::default(),
+        working_directory: None,
+        environment: HashMap::new(),
+        version: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    client
+        .call("task.save", serde_json::json!({ "task": task }))
+        .await
+        .expect("task.save via real daemon");
+
+    let mut event_rx = client.subscribe();
+    client
+        .call("task.trigger_now", serde_json::json!({ "id": task_id }))
+        .await
+        .expect("task.trigger_now via real daemon");
+
+    let mut finished = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
+        {
+            if event.event == "execution.finished" && event.data["task_id"] == task_id.to_string() {
+                assert_eq!(event.data["status"], "Succeeded");
+                finished = true;
+                break;
+            }
+        }
+    }
+    assert!(finished, "real daemon did not finish the task");
+
+    let _ = client.call("agent.shutdown", serde_json::json!({})).await;
+}

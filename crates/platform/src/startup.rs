@@ -138,6 +138,15 @@ pub fn parse_sc_query_state(output: &str) -> WindowsServiceState {
 
 /// macOS LaunchDaemon plist XML with RunAtLoad + KeepAlive and log redirection.
 pub fn macos_daemon_plist(agent_exe: &Path, data_dir: &Path) -> String {
+    macos_daemon_plist_for_label(MACOS_DAEMON_LABEL, agent_exe, data_dir)
+}
+
+/// Same as [`macos_daemon_plist`] but with a custom label (used by integration tests).
+pub fn macos_daemon_plist_for_label(
+    label: &str,
+    agent_exe: &Path,
+    data_dir: &Path,
+) -> String {
     let logs = data_dir.join("logs");
     format!(
         concat!(
@@ -168,7 +177,7 @@ pub fn macos_daemon_plist(agent_exe: &Path, data_dir: &Path) -> String {
             "</dict>\n",
             "</plist>\n",
         ),
-        label = MACOS_DAEMON_LABEL,
+        label = label,
         exe = agent_exe.display(),
         data = data_dir.display(),
         out_log = logs.join("daemon.out.log").display(),
