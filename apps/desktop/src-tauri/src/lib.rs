@@ -1,5 +1,6 @@
 pub mod agent_manager;
 pub mod commands;
+pub mod startup;
 pub mod events;
 pub mod macos_notification;
 pub mod tray;
@@ -48,6 +49,11 @@ pub fn run() {
     let manager_for_events = agent_manager.clone();
     let manager_for_exit = agent_manager.clone();
 
+    // 开机自启模式下桌面端只做系统服务的客户端：禁止 spawn，退出时不 shutdown。
+    {
+        let st = startup::service_status_sync_fallback();
+        manager_for_exit.set_allow_spawn(!(st.installed && st.running));
+    }
     let builder = tauri::Builder::default();
     let last_notification_time = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
     let last_notification_for_events = last_notification_time.clone();
@@ -103,6 +109,9 @@ pub fn run() {
             cancel_execution,
             get_execution_output,
             restart_agent,
+            startup::service_status,
+            startup::service_install,
+            startup::service_uninstall,
             get_system_settings,
             save_system_settings,
             task_overview,
@@ -116,8 +125,14 @@ pub fn run() {
             let _ = &app_handle;
             match event {
                 tauri::RunEvent::ExitRequested { .. } => {
-                    tracing::info!("Application exit requested, shutting down agent daemon...");
                     let manager = manager_for_exit.clone();
+                    if !manager.spawned_by_us() {
+                        tracing::info!(
+                            "Application exit requested; agent not spawned by us, leaving system service running"
+                        );
+                        return;
+                    }
+                    tracing::info!("Application exit requested, shutting down agent daemon...");
                     tauri::async_runtime::block_on(async move {
                         manager.shutdown_agent().await;
                         tokio::time::sleep(std::time::Duration::from_millis(150)).await;

@@ -373,3 +373,16 @@ async fn test_agent_manager_shutdown_offline_does_not_panic() {
     manager.shutdown_agent().await;
     assert!(manager.client_handle().lock().await.is_none());
 }
+
+#[test]
+fn test_startup_module_service_status_shape() {
+    let info = easyjob_desktop_lib::startup::service_status_sync_fallback();
+    assert!(!info.running);
+}
+
+#[test]
+fn test_agent_manager_default_allows_spawn() {
+    let manager = AgentManager::new();
+    assert!(manager.allow_spawn());
+    assert!(!manager.spawned_by_us());
+}

@@ -1,7 +1,8 @@
 use easyjob_ipc::client::IpcClient;
-use easyjob_ipc::default_ipc_path;
+use easyjob_ipc::transport::system_ipc_path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -12,6 +13,8 @@ pub struct AgentManager {
     client: Arc<Mutex<Option<IpcClient>>>,
     connect_lock: Arc<Mutex<()>>,
     last_spawn_attempt: Arc<Mutex<Option<std::time::Instant>>>,
+    allow_spawn: Arc<AtomicBool>,
+    spawned_by_us: Arc<AtomicBool>,
 }
 
 impl Default for AgentManager {
@@ -22,7 +25,7 @@ impl Default for AgentManager {
 
 impl AgentManager {
     pub fn new() -> Self {
-        Self::with_ipc_path(default_ipc_path())
+        Self::with_ipc_path(system_ipc_path())
     }
 
     pub fn with_ipc_path(path: PathBuf) -> Self {
@@ -31,7 +34,23 @@ impl AgentManager {
             client: Arc::new(Mutex::new(None)),
             connect_lock: Arc::new(Mutex::new(())),
             last_spawn_attempt: Arc::new(Mutex::new(None)),
+            allow_spawn: Arc::new(AtomicBool::new(true)),
+            spawned_by_us: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 开机自启模式下设为 false：只连接系统服务，绝不拉起新 Agent。
+    pub fn set_allow_spawn(&self, allow: bool) {
+        self.allow_spawn.store(allow, Ordering::SeqCst);
+    }
+
+    pub fn allow_spawn(&self) -> bool {
+        self.allow_spawn.load(Ordering::SeqCst)
+    }
+
+    /// 本会话是否由桌面端拉起 Agent（退出时据此决定是否 shutdown）。
+    pub fn spawned_by_us(&self) -> bool {
+        self.spawned_by_us.load(Ordering::SeqCst)
     }
 
     pub fn client_handle(&self) -> Arc<Mutex<Option<IpcClient>>> {
@@ -82,9 +101,16 @@ impl AgentManager {
         };
 
         if should_spawn {
+            if !self.allow_spawn() {
+                return Err(
+                    "系统服务未运行，请检查开机自启服务状态（桌面端不会另起 Agent）"
+                        .to_string(),
+                );
+            }
             info!("easyjob-agent is not running; attempting to spawn daemon");
-            if let Err(e) = Self::spawn_agent_process() {
-                warn!("Failed to spawn easyjob-agent: {}", e);
+            match Self::spawn_agent_process() {
+                Ok(()) => self.spawned_by_us.store(true, Ordering::SeqCst),
+                Err(e) => warn!("Failed to spawn easyjob-agent: {}", e),
             }
         }
 
@@ -137,6 +163,9 @@ impl AgentManager {
     }
 
     pub async fn restart_agent(&self) -> Result<bool, String> {
+        if !self.allow_spawn() {
+            return Err("开机自启模式下请通过系统服务管理器重启 Agent".to_string());
+        }
         info!("Restarting easyjob-agent daemon requested");
         if let Ok(client) = self.ensure_connected().await {
             let _ = client.call("agent.shutdown", serde_json::json!({})).await;
@@ -205,6 +234,12 @@ impl AgentManager {
         info!("Spawning easyjob-agent daemon from: {:?}", bin);
         let mut cmd = std::process::Command::new(bin);
         cmd.arg("--daemon");
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let data_dir = easyjob_platform::startup::system_data_dir(exe_dir.as_deref());
+        cmd.arg("--data-dir");
+        cmd.arg(&data_dir);
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());

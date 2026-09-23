@@ -17,6 +17,7 @@ tauri-build = { version = "2.0", features = [] }
 easyjob-common = { path = "../../../crates/common" }
 easyjob-domain = { path = "../../../crates/domain" }
 easyjob-ipc = { path = "../../../crates/ipc" }
+easyjob-platform = { path = "../../../crates/platform" }
 tauri = { version = "2.1", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
