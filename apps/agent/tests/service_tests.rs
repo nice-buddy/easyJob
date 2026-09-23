@@ -36,7 +36,7 @@ async fn test_agent_service_lifecycle_and_rpc() {
         .call("agent.status", serde_json::json!({}))
         .await
         .expect("agent.status failed");
-    assert_eq!(status_val["version"], "0.1.0");
+    assert_eq!(status_val["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(status_val["active_tasks"], 0);
     assert_eq!(status_val["running_executions"], 0);
 

@@ -45,6 +45,17 @@ pub struct AgentService {
 
 impl AgentService {
     pub async fn init(db_url: &str, ipc_path: &Path, max_concurrent: usize) -> Result<Self> {
+        Self::init_shared(db_url, ipc_path, max_concurrent, false).await
+    }
+
+    /// `shared=true` binds the system channel (Unix 0666 socket) so desktop
+    /// sessions of logged-in users can connect to the system service.
+    pub async fn init_shared(
+        db_url: &str,
+        ipc_path: &Path,
+        max_concurrent: usize,
+        shared: bool,
+    ) -> Result<Self> {
         let pool = init_pool(db_url).await?;
         let _ = recover_dangling_executions(&pool).await?;
 
@@ -117,7 +128,14 @@ impl AgentService {
             exec_cancel_token: exec_cancel_token.clone(),
         });
 
-        let ipc_server = IpcServer::bind_with_event_tx(ipc_path, handler, event_tx).await?;
+        // NOTE: shared mode creates its own broadcast channel inside bind_shared.
+        // The handler keeps `event_tx` for trigger_now fan-out; run() re-shares
+        // the server broadcaster with subscribers via event_sender().
+        let ipc_server = if shared {
+            IpcServer::bind_shared(ipc_path, handler.clone()).await?
+        } else {
+            IpcServer::bind_with_event_tx(ipc_path, handler, event_tx).await?
+        };
 
         Ok(Self {
             task_repo,
