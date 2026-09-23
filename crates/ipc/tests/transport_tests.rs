@@ -93,6 +93,25 @@ async fn test_ipc_dead_socket_cleanup_and_permissions() {
 }
 
 #[tokio::test]
+async fn test_ipc_system_socket_permissions_shared() {
+    let dir = tempdir().unwrap();
+    let socket_path = dir.path().join("easyjob.sock");
+    let server = IpcServer::bind_shared(&socket_path, Arc::new(EchoHandler))
+        .await
+        .unwrap();
+    tokio::spawn(server.run());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&socket_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o666, "shared system socket must be 0666, got {mode:o}");
+    }
+    let client = IpcClient::connect(&socket_path).await.unwrap();
+    let resp = client.call("ping", serde_json::json!({})).await.unwrap();
+    assert_eq!(resp, serde_json::json!("pong"));
+}
+
+#[tokio::test]
 async fn test_ipc_multiple_concurrent_calls() {
     let dir = tempdir().unwrap();
     let socket_path = dir.path().join("concurrent.sock");

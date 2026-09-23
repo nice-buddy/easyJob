@@ -97,10 +97,25 @@ pub struct IpcServer {
     pipe_instance: tokio::net::windows::named_pipe::NamedPipeServer,
 }
 
+/// Socket visibility for Unix domain sockets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocketMode {
+    /// Owner-only (`0o600`), used by per-user/test channels.
+    Private,
+    /// Shared system channel (`0o666`) so logged-in users can reach the service.
+    Shared,
+}
+
 impl IpcServer {
     pub async fn bind(path: &Path, handler: Arc<dyn RequestHandler>) -> Result<Self> {
         let (event_tx, _) = broadcast::channel(1024);
         Self::bind_with_event_tx(path, handler, event_tx).await
+    }
+
+    /// System channel: Unix socket readable/writable by logged-in users.
+    pub async fn bind_shared(path: &Path, handler: Arc<dyn RequestHandler>) -> Result<Self> {
+        let (event_tx, _) = broadcast::channel(1024);
+        Self::bind_with_event_tx_and_mode(path, handler, event_tx, SocketMode::Shared).await
     }
 
     /// Like `bind`, but uses the provided `event_tx` so the caller can share the broadcaster
@@ -109,6 +124,15 @@ impl IpcServer {
         path: &Path,
         handler: Arc<dyn RequestHandler>,
         event_tx: broadcast::Sender<IpcEvent>,
+    ) -> Result<Self> {
+        Self::bind_with_event_tx_and_mode(path, handler, event_tx, SocketMode::Private).await
+    }
+
+    async fn bind_with_event_tx_and_mode(
+        path: &Path,
+        handler: Arc<dyn RequestHandler>,
+        event_tx: broadcast::Sender<IpcEvent>,
+        mode: SocketMode,
     ) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(Error::Io)?;
@@ -121,7 +145,15 @@ impl IpcServer {
             }
             let l = tokio::net::UnixListener::bind(path).map_err(Error::Io)?;
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            let socket_perm = match mode {
+                SocketMode::Private => 0o600,
+                SocketMode::Shared => 0o666,
+            };
+            if let Err(e) =
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(socket_perm))
+            {
+                tracing::debug!("failed to set IPC socket permissions: {:?}", e);
+            }
             l
         };
 
@@ -129,6 +161,11 @@ impl IpcServer {
         let pipe_instance = {
             use tokio::net::windows::named_pipe::ServerOptions;
             let pipe_name = path.to_string_lossy().to_string();
+            if mode == SocketMode::Shared {
+                tracing::debug!(
+                    "system named pipe uses default ACL; installer grants access via icacls"
+                );
+            }
             ServerOptions::new()
                 .first_pipe_instance(true)
                 .create(&pipe_name)
