@@ -1,7 +1,7 @@
 use easyjob_ipc::client::IpcClient;
 use easyjob_ipc::protocol::{IpcEvent, IpcRequest, IpcResponse};
 use easyjob_ipc::server::{IpcServer, RequestHandler};
-use easyjob_ipc::transport::default_ipc_path;
+use easyjob_ipc::transport::{default_ipc_path, ipc_path_for_data_dir, system_ipc_path};
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -124,13 +124,44 @@ async fn test_ipc_multiple_concurrent_calls() {
 #[test]
 fn test_default_ipc_path() {
     let path = default_ipc_path();
+    assert_eq!(path, system_ipc_path());
     #[cfg(unix)]
     {
-        assert!(path.to_string_lossy().ends_with(".easyjob/easyjob.sock"));
+        assert!(path.to_string_lossy().ends_with("EasyJob/easyjob.sock"));
     }
     #[cfg(windows)]
     {
-        assert!(path.to_string_lossy().starts_with(r"\\.\pipe\easyjob-"));
+        assert_eq!(path.to_string_lossy(), r"\\.\pipe\easyjob-system");
+    }
+}
+
+#[test]
+fn test_system_ipc_path_is_fixed() {
+    let a = system_ipc_path();
+    let b = system_ipc_path();
+    assert_eq!(a, b);
+    #[cfg(windows)]
+    assert_eq!(a.to_string_lossy(), r"\\.\pipe\easyjob-system");
+}
+
+#[test]
+fn test_ipc_path_for_data_dir_unix_follows_dir() {
+    #[cfg(unix)]
+    {
+        let dir = std::path::Path::new("/Library/Application Support/EasyJob");
+        assert_eq!(ipc_path_for_data_dir(dir), dir.join("easyjob.sock"));
+    }
+}
+
+#[test]
+fn test_ipc_path_for_data_dir_windows_ignores_dir() {
+    #[cfg(windows)]
+    {
+        let dir = std::path::Path::new(r"C:\Program Files\easyJob\data");
+        assert_eq!(
+            ipc_path_for_data_dir(dir).to_string_lossy(),
+            r"\\.\pipe\easyjob-system"
+        );
     }
 }
 
