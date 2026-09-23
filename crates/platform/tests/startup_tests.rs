@@ -99,3 +99,48 @@ fn test_macos_prepare_data_dir_script_grants_staff() {
     assert!(script.contains("chown -R root:staff"), "{script}");
     assert!(script.contains("g+rwX"), "{script}");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_macos_plist_passes_plutil_lint() {
+    let dir = tempfile::tempdir().unwrap();
+    let plist_path = dir.path().join("com.easyjob.agent.plist");
+    let plist = macos_daemon_plist(
+        Path::new("/Applications/easyJob.app/Contents/Resources/easyjob-agent"),
+        Path::new("/Library/Application Support/EasyJob"),
+    );
+    std::fs::write(&plist_path, plist).unwrap();
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .args(["-lint", plist_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "plutil lint failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_macos_install_script_passes_sh_syntax_check() {
+    let script = macos_install_script(
+        "/Library/LaunchDaemons/com.easyjob.agent.plist",
+        "PLIST",
+        Path::new("/Library/Application Support/EasyJob"),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let script_path = dir.path().join("install.sh");
+    std::fs::write(&script_path, script).unwrap();
+    let out = std::process::Command::new("/bin/sh")
+        .args(["-n", script_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "sh -n failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

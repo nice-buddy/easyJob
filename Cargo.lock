@@ -1257,6 +1257,7 @@ dependencies = [
  "easyjob-domain",
  "libc",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "windows-sys 0.59.0",
