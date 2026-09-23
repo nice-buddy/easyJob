@@ -1,3 +1,5 @@
+> **Superseded（已被取代）**：本文描述的是旧版登录后自启（开关式）。当前实现见 [2026-09-23-system-autostart-design.md](./2026-09-23-system-autostart-design.md)：三选一（开机自启 / 登录后自启 / 不自启），开机自启使用 Windows Service + LaunchDaemon。
+
 # easyJob 桌面端系统设置增强、开机自启与新应用图标设计规范
 
 ## 1. 概述与背景

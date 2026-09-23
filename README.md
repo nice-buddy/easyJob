@@ -72,10 +72,12 @@
 - **进程树级联强杀（Kill Process Tree）**：针对耗时或异常卡死的任务，支持一键发送取消指令，级联终止所有衍生子进程。
 - 一键复制执行日志、一键清屏与执行结果状态标签展示。
 
-### 4. 开机自启与系统托盘深度集成
-- **Windows 纯净注册表方案**：集成官方 `tauri-plugin-autostart` 插件，在 Windows 下直接读写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，**严禁且绝不使用任务计划程序（`schtasks`）**。
-- **静默开机自启（`--minimized`）**：默认开启开机自启，开机时直接隐藏主窗口常驻系统托盘，静默运行后台任务。
-- **防误关常驻**：点击主窗口关闭按钮自动拦截并最小化至托盘，通过托盘菜单随时呼出主窗口或彻底退出应用。
+### 4. 自启模式与系统托盘深度集成
+- **三选一自启模式**：`开机自启` / `登录后自启` / `不自启`，三者互斥，切换失败自动回滚。
+- **开机自启（用户未登录也运行）**：Windows 使用 Windows Service（`easyJobAgent`，以 `LocalSystem` 自动启动）；macOS 使用 LaunchDaemon（`/Library/LaunchDaemons/com.easyjob.agent.plist`，`RunAtLoad + KeepAlive`）。任务以 `SYSTEM` / `root` 身份执行，无桌面与用户环境，需要管理员权限安装。
+- **登录后自启**：Windows 沿用登录启动项（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`），macOS 沿用用户级 LaunchAgent；用户登录后静默启动并最小化到托盘（`--minimized`）。任务计划程序仍禁止用于业务调度。
+- **统一系统数据目录**：Windows 为 `<安装目录>\data`，macOS 为 `/Library/Application Support/EasyJob`；`~/.easyjob` 不再使用，旧数据请用任务导出导入手动迁移或丢弃。Windows 卸载时默认保留 `data`（安装包若不支持保留提示，请手动备份后删除）。
+- **防误关常驻**：点击主窗口关闭按钮自动拦截并最小化至托盘，通过托盘菜单随时呼出主窗口或彻底退出应用。开机模式下退出桌面端不会关闭系统服务。
 
 ### 5. 高可靠性并发策略与故障恢复
 - **并发控制**：支持“允许并行（AllowParallel）”、“丢弃/跳过（SkipIfRunning）”、“单任务队列排队（QueueOne）”三种策略。
