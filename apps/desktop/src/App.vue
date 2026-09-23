@@ -7,7 +7,7 @@ import ExecutionsView from './views/ExecutionsView.vue';
 import SettingsView from './views/SettingsView.vue';
 import { useAgentStore } from './stores/agentStore';
 import { useExecutionStore } from './stores/executionStore';
-import { initAutostartDefault } from './services/autostart';
+import { migrateLegacyDefault } from './services/startupMode';
 import { listen } from '@tauri-apps/api/event';
 
 const isDark = ref(true);
@@ -35,7 +35,7 @@ let isComponentMounted = true;
 
 onMounted(async () => {
   executionStore.initListeners();
-  initAutostartDefault().catch((err) => console.warn('Autostart init bypassed:', err));
+  migrateLegacyDefault().catch((err) => console.warn('Startup mode migrate bypassed:', err));
   await agentStore.fetchStatus();
   pollInterval = setInterval(() => {
     agentStore.fetchStatus();

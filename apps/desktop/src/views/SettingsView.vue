@@ -6,14 +6,15 @@ import {
   NDescriptions,
   NDescriptionsItem,
   NButton,
-  NSwitch,
+  NRadioGroup,
+  NRadio,
   NSelect,
   NInputNumber,
   NTag,
   useMessage,
 } from 'naive-ui';
 import { getVersion } from '@tauri-apps/api/app';
-import { setAutostart, initAutostartDefault } from '../services/autostart';
+import { getStartupMode, setStartupMode, type StartupMode } from '../services/startupMode';
 import { restartAgent, getSystemSettings, saveSystemSettings, openExternalUrl } from '../services/tauri';
 import { checkForUpdate } from '../services/update';
 import type { SystemSettings } from '../types/task';
@@ -22,7 +23,24 @@ const agentStore = useAgentStore();
 const message = useMessage();
 
 const autostartLoading = ref(false);
-const autostartActive = ref(true);
+const autostartMode = ref<StartupMode>('login');
+const startupOptions = [
+  {
+    value: 'boot',
+    label: '开机自启（未登录也运行，需管理员权限）',
+    desc: '以 SYSTEM / root 身份随系统启动，用户未登录也执行任务',
+  },
+  {
+    value: 'login',
+    label: '登录后自启',
+    desc: '用户登录后静默启动并最小化到托盘',
+  },
+  {
+    value: 'disabled',
+    label: '不自启',
+    desc: '不写入任何启动项，仅手动启动',
+  },
+];
 const restartingAgent = ref(false);
 
 const settingsLoading = ref(false);
@@ -52,9 +70,9 @@ const retentionPresetOptions = [
 
 onMounted(async () => {
   try {
-    autostartActive.value = await initAutostartDefault();
+    autostartMode.value = await getStartupMode();
   } catch (e) {
-    autostartActive.value = false;
+    console.error('Failed to load startup mode:', e);
   }
 
   try {
@@ -157,15 +175,21 @@ async function handleRestartAgent() {
   }
 }
 
-async function handleToggleAutostart(value: boolean) {
+const MODE_SUCCESS_COPY: Record<StartupMode, string> = {
+  boot: '已切换为开机自启（未登录也运行）',
+  login: '已切换为登录后自启',
+  disabled: '已关闭自启',
+};
+
+async function handleStartupModeChange(value: StartupMode) {
+  const prev = autostartMode.value;
   autostartLoading.value = true;
   try {
-    await setAutostart(value);
-    autostartActive.value = value;
-    message.success(value ? '已开启开机自启动' : '已关闭开机自启动');
+    autostartMode.value = await setStartupMode(value);
+    message.success(MODE_SUCCESS_COPY[value]);
   } catch (e: any) {
-    message.error(`设置开机自启失败: ${e?.message || e}`);
-    autostartActive.value = !value;
+    autostartMode.value = prev;
+    message.error(`切换自启模式失败: ${e?.message || e}`);
   } finally {
     autostartLoading.value = false;
   }
@@ -183,16 +207,26 @@ async function handleToggleAutostart(value: boolean) {
     <NCard title="系统与启动偏好" size="small">
       <div class="flex items-center justify-between py-1">
         <div class="space-y-1">
-          <div class="text-sm font-medium text-slate-800 dark:text-zinc-200">开机自启动</div>
+          <div class="text-sm font-medium text-slate-800 dark:text-zinc-200">自启动模式</div>
           <div class="text-xs text-slate-500 dark:text-zinc-400">
-            开机时在后台静默运行 easyJob 并最小化到系统托盘，自动守护并按时调度各项定时任务
+            开机自启以 SYSTEM / root 身份运行，用户未登录也执行任务，需要管理员权限
           </div>
         </div>
-        <NSwitch
-          v-model:value="autostartActive"
-          :loading="autostartLoading"
-          @update:value="handleToggleAutostart"
-        />
+        <NRadioGroup
+          v-model:value="autostartMode"
+          :disabled="autostartLoading"
+          @update:value="handleStartupModeChange"
+        >
+          <div class="flex flex-col gap-2">
+            <NRadio
+              v-for="opt in startupOptions"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </NRadio>
+          </div>
+        </NRadioGroup>
       </div>
     </NCard>
 
