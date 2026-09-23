@@ -115,8 +115,8 @@ fn install_service_cmd(_data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::er
 #[cfg(target_os = "windows")]
 fn install_service_cmd(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     use easyjob_platform::startup::{
-        parse_sc_query_state, windows_service_image_path, WindowsServiceState,
-        WINDOWS_SERVICE_DISPLAY_NAME, WINDOWS_SERVICE_NAME,
+        windows_service_image_path, WindowsServiceState, WINDOWS_SERVICE_DISPLAY_NAME,
+        WINDOWS_SERVICE_NAME,
     };
     let data_dir = resolve_data_dir(data_dir);
     std::fs::create_dir_all(data_dir.join("logs"))?;
@@ -241,26 +241,6 @@ fn grant_authenticated_users_modify(
         return Ok(());
     }
     Err(format!("icacls 授权失败：{}", String::from_utf8_lossy(&out.stdout)).into())
-}
-
-/// NOTE: install/uninstall 由桌面端提权拉起（UAC），此处假设已提权，直接调 sc.exe。
-#[cfg(target_os = "windows")]
-fn run_elevated_sc(args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let mut cmd = std::process::Command::new("sc.exe");
-    cmd.args(args);
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    let out = cmd.output()?;
-    if out.status.success() {
-        return Ok(());
-    }
-    Err(format!(
-        "sc.exe {} 执行失败：{}",
-        args.join(" "),
-        String::from_utf8_lossy(&out.stdout)
-    )
-    .into())
 }
 
 #[cfg(target_os = "windows")]
