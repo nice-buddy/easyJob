@@ -5,11 +5,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const releaseV102 = {
-  tag_name: 'v1.0.2',
-  name: 'easyJob v1.0.2',
+const releaseV103 = {
+  tag_name: 'v1.0.3',
+  name: 'easyJob v1.0.3',
   body: 'Bug fixes',
-  html_url: 'https://github.com/nice-buddy/easyJob/releases/tag/v1.0.2',
+  html_url: 'https://github.com/nice-buddy/easyJob/releases/tag/v1.0.3',
   published_at: '2026-09-20T00:00:00Z',
 };
 
@@ -31,7 +31,7 @@ function mockReleaseList(payload: unknown, ok = true, status = 200) {
 
 describe('update service', () => {
   it('detects a newer release version', () => {
-    expect(isNewerVersion('1.0.1', '1.0.2')).toBe(true);
+    expect(isNewerVersion('1.0.2', '1.0.3')).toBe(true);
   });
 
   it('returns false when versions are equal (ignores leading v)', () => {
@@ -44,15 +44,15 @@ describe('update service', () => {
   });
 
   it('detects patch-level updates', () => {
-    expect(isNewerVersion('1.0.1', '1.0.2')).toBe(true);
+    expect(isNewerVersion('1.0.2', '1.0.3')).toBe(true);
   });
 
   it('fetches the latest release from the GitHub release list', async () => {
-    mockReleaseList([releaseV102]);
+    mockReleaseList([releaseV103]);
 
     const release = await fetchLatestRelease();
-    expect(release?.tag_name).toBe('v1.0.2');
-    expect(release?.html_url).toContain('releases/tag/v1.0.2');
+    expect(release?.tag_name).toBe('v1.0.3');
+    expect(release?.html_url).toContain('releases/tag/v1.0.3');
   });
 
   it('returns null when no releases have been published yet', async () => {
@@ -68,18 +68,18 @@ describe('update service', () => {
   });
 
   it('reports hasUpdate=true when the release is newer', async () => {
-    mockReleaseList([releaseV102]);
+    mockReleaseList([releaseV103]);
 
-    const result = await checkForUpdate('1.0.1');
+    const result = await checkForUpdate('1.0.2');
     expect(result.hasUpdate).toBe(true);
-    expect(result.latest).toBe('v1.0.2');
+    expect(result.latest).toBe('v1.0.3');
     expect(result.noReleases).toBe(false);
   });
 
   it('reports hasUpdate=false when already on the latest version', async () => {
     mockReleaseList([releaseV101]);
 
-    const result = await checkForUpdate('1.0.1');
+    const result = await checkForUpdate('1.0.2');
     expect(result.hasUpdate).toBe(false);
     expect(result.noReleases).toBe(false);
   });
@@ -87,7 +87,7 @@ describe('update service', () => {
   it('reports noReleases=true instead of erroring when nothing is published', async () => {
     mockReleaseList([]);
 
-    const result = await checkForUpdate('1.0.1');
+    const result = await checkForUpdate('1.0.2');
     expect(result.noReleases).toBe(true);
     expect(result.hasUpdate).toBe(false);
   });

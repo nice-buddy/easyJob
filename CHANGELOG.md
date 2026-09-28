@@ -4,7 +4,7 @@
 > 发布前请先更新本文件，写清该版本的变更。章节标题格式固定为 `## v<版本号>`，
 > 必须与 tag 名称（如 `v1.0.1`）去掉前缀 `v` 后对应，以便 workflow 自动提取。
 
-## Unreleased
+## v1.0.3
 
 ### 新增
 - 任务导出完成后自动在 Finder / Explorer 中定位导出的 JSON 文件
@@ -14,6 +14,7 @@
 - Windows NSIS 安装包卸载时询问是否保留 `data`
 
 ### 变更
+- 项目版本号统一为 1.0.3（workspace 各 crate、桌面端 package.json、tauri.conf.json）
 - Agent 新增 `--service` / `--install-service` / `--uninstall-service` 与系统级 IPC 通道
 - 桌面端在系统服务已安装时只做 IPC 客户端，退出时不关闭系统服务
 

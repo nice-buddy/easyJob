@@ -1092,7 +1092,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "easyjob"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "chrono",
  "easyjob-agent",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-agent"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "async-trait",
  "block2",
@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-common"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "chrono",
  "serde",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-desktop"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-domain"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-executor"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-ipc"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-logging"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "easyjob-common",
  "tempfile",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-persistence"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-platform"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "easyjob-common",
  "easyjob-domain",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "easyjob-scheduler"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "async-trait",
  "chrono",
