@@ -193,6 +193,19 @@ pub fn reveal_command_for_platform(platform: &str, path: &Path) -> (String, Vec<
     }
 }
 
+/// Write the exported task JSON into `download_dir`, returning the created path.
+pub fn write_export_file(
+    download_dir: &Path,
+    filename: &str,
+    contents: &str,
+) -> Result<PathBuf, String> {
+    validate_export_filename(filename)?;
+    std::fs::create_dir_all(download_dir).map_err(|e| format!("无法创建下载目录: {e}"))?;
+    let path = download_dir.join(filename);
+    std::fs::write(&path, contents).map_err(|e| format!("写入导出文件失败: {e}"))?;
+    Ok(path)
+}
+
 /// Write the exported task JSON into the user's Downloads directory.
 #[tauri::command]
 pub async fn export_tasks_json(
@@ -200,14 +213,11 @@ pub async fn export_tasks_json(
     filename: String,
     contents: String,
 ) -> Result<String, String> {
-    validate_export_filename(&filename)?;
     let download_dir = app
         .path()
         .download_dir()
         .map_err(|e| format!("无法获取系统下载目录: {e}"))?;
-    std::fs::create_dir_all(&download_dir).map_err(|e| format!("无法创建下载目录: {e}"))?;
-    let path = download_dir.join(&filename);
-    std::fs::write(&path, contents).map_err(|e| format!("写入导出文件失败: {e}"))?;
+    let path = write_export_file(&download_dir, &filename, &contents)?;
     Ok(path.to_string_lossy().to_string())
 }
 

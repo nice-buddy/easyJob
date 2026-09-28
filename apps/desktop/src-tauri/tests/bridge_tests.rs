@@ -423,3 +423,17 @@ fn test_reveal_command_for_platforms() {
     assert_eq!(linux_program, "xdg-open");
     assert_eq!(linux_args, vec!["/tmp"]);
 }
+
+#[test]
+fn test_write_export_file_creates_json() {
+    use easyjob_desktop_lib::commands::write_export_file;
+
+    let dir = tempdir().unwrap();
+    let path = write_export_file(dir.path(), "easyjob-tasks.json", "{\"tasks\":[]}")
+        .expect("write export file");
+    assert!(path.is_file());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "{\"tasks\":[]}"
+    );
+}
