@@ -75,6 +75,34 @@ export async function rerollTrigger(
   });
 }
 
+export async function exportTasksJson(filename: string, contents: string): Promise<string> {
+  return await invoke<string>('export_tasks_json', { filename, contents });
+}
+
+export async function revealInFileManager(path: string): Promise<void> {
+  await invoke<void>('reveal_in_file_manager', { path });
+}
+
+export interface ExportTasksResult {
+  path: string;
+  revealed: boolean;
+  revealError?: string;
+}
+
+/** Export first; reveal is best-effort and never turns a successful export into a failure. */
+export async function exportTasksAndReveal(
+  filename: string,
+  contents: string,
+): Promise<ExportTasksResult> {
+  const path = await exportTasksJson(filename, contents);
+  try {
+    await revealInFileManager(path);
+    return { path, revealed: true };
+  } catch (e: any) {
+    return { path, revealed: false, revealError: e?.message || String(e) };
+  }
+}
+
 export async function openExternalUrl(url: string): Promise<void> {
   await invoke<void>('open_external_url', { url });
 }

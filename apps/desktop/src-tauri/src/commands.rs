@@ -4,8 +4,10 @@ use easyjob_domain::execution::Execution;
 use easyjob_domain::task::Task;
 use easyjob_domain::SystemSettings;
 use easyjob_ipc::protocol::AgentStatus;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 
 #[tauri::command]
 pub async fn get_agent_status(
@@ -148,6 +150,85 @@ pub async fn reroll_trigger(
             serde_json::json!({ "task_id": task_id, "trigger_id": trigger_id }),
         )
         .await
+}
+
+/// Export filename must be a plain `.json` file name, not a path.
+pub fn validate_export_filename(filename: &str) -> Result<(), String> {
+    if filename.is_empty() || filename.len() > 128 {
+        return Err("导出文件名长度不合法".to_string());
+    }
+    if !filename.ends_with(".json") {
+        return Err("导出文件必须是 .json".to_string());
+    }
+    if filename.starts_with('.') {
+        return Err("导出文件名不能以 . 开头".to_string());
+    }
+    if !filename
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err("导出文件名包含非法字符".to_string());
+    }
+    Ok(())
+}
+
+/// Build the platform-specific command that reveals a file in the file manager.
+pub fn reveal_command_for_platform(platform: &str, path: &Path) -> (String, Vec<String>) {
+    match platform {
+        "macos" => (
+            "open".to_string(),
+            vec!["-R".to_string(), path.to_string_lossy().to_string()],
+        ),
+        "windows" => (
+            "explorer".to_string(),
+            vec![format!("/select,{}", path.display())],
+        ),
+        _ => {
+            let parent = path.parent().unwrap_or(path);
+            (
+                "xdg-open".to_string(),
+                vec![parent.to_string_lossy().to_string()],
+            )
+        }
+    }
+}
+
+/// Write the exported task JSON into the user's Downloads directory.
+#[tauri::command]
+pub async fn export_tasks_json(
+    app: tauri::AppHandle,
+    filename: String,
+    contents: String,
+) -> Result<String, String> {
+    validate_export_filename(&filename)?;
+    let download_dir = app
+        .path()
+        .download_dir()
+        .map_err(|e| format!("无法获取系统下载目录: {e}"))?;
+    std::fs::create_dir_all(&download_dir).map_err(|e| format!("无法创建下载目录: {e}"))?;
+    let path = download_dir.join(&filename);
+    std::fs::write(&path, contents).map_err(|e| format!("写入导出文件失败: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Reveal an exported file in Finder / Explorer (selecting the file).
+#[tauri::command]
+pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    let path = PathBuf::from(&path);
+    if !path.is_file() {
+        return Err("导出文件不存在".to_string());
+    }
+    let (program, args) = reveal_command_for_platform(std::env::consts::OS, &path);
+    let status = Command::new(&program)
+        .args(&args)
+        .status()
+        .map_err(|e| format!("无法打开文件管理器: {e}"))?;
+    // Windows Explorer commonly exits with a non-zero code even after opening successfully.
+    if status.success() || cfg!(target_os = "windows") {
+        Ok(())
+    } else {
+        Err(format!("文件管理器返回失败状态: {program}"))
+    }
 }
 
 #[tauri::command]

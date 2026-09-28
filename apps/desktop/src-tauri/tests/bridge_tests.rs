@@ -393,3 +393,33 @@ fn test_agent_manager_boot_mode_disables_spawn() {
     manager.set_allow_spawn(false);
     assert!(!manager.allow_spawn());
 }
+
+#[test]
+fn test_export_filename_validation_rejects_traversal() {
+    use easyjob_desktop_lib::commands::validate_export_filename;
+
+    assert!(validate_export_filename("easyjob-tasks-20260928120000.json").is_ok());
+    assert!(validate_export_filename("../evil.json").is_err());
+    assert!(validate_export_filename("sub/dir.json").is_err());
+    assert!(validate_export_filename("tasks.txt").is_err());
+    assert!(validate_export_filename("").is_err());
+}
+
+#[test]
+fn test_reveal_command_for_platforms() {
+    use easyjob_desktop_lib::commands::reveal_command_for_platform;
+    use std::path::Path;
+
+    let path = Path::new("/tmp/easyjob-tasks.json");
+    let (mac_program, mac_args) = reveal_command_for_platform("macos", path);
+    assert_eq!(mac_program, "open");
+    assert_eq!(mac_args, vec!["-R", "/tmp/easyjob-tasks.json"]);
+
+    let (win_program, win_args) = reveal_command_for_platform("windows", path);
+    assert_eq!(win_program, "explorer");
+    assert_eq!(win_args, vec!["/select,/tmp/easyjob-tasks.json"]);
+
+    let (linux_program, linux_args) = reveal_command_for_platform("linux", path);
+    assert_eq!(linux_program, "xdg-open");
+    assert_eq!(linux_args, vec!["/tmp"]);
+}

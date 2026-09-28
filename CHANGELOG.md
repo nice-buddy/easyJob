@@ -7,6 +7,7 @@
 ## Unreleased
 
 ### 新增
+- 任务导出完成后自动在 Finder / Explorer 中定位导出的 JSON 文件
 - 系统设置新增自启动三选一：开机自启 / 登录后自启 / 不自启
 - 开机自启支持用户未登录时运行任务：Windows 使用 Windows Service（SYSTEM），macOS 使用 LaunchDaemon（root）
 - 系统级统一数据目录：Windows `<安装目录>\data`，macOS `/Library/Application Support/EasyJob`；`~/.easyjob` 不再使用

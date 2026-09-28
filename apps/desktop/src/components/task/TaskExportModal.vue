@@ -11,6 +11,7 @@ import {
 } from 'naive-ui';
 import { Search, Download, CheckSquare, Square } from 'lucide-vue-next';
 import type { Task } from '../../types/task';
+import { exportTasksAndReveal } from '../../services/tauri';
 
 const props = defineProps<{
   show: boolean;
@@ -24,6 +25,7 @@ const emit = defineEmits<{
 const message = useMessage();
 const searchQuery = ref('');
 const selectedTaskIds = ref<string[]>([]);
+const exporting = ref(false);
 
 // 每次打开弹窗默认全选
 watch(
@@ -64,7 +66,7 @@ function handleToggleSelectAll() {
   }
 }
 
-function handleExport() {
+async function handleExport() {
   if (selectedTaskIds.value.length === 0) {
     message.warning('请至少选择一个需要导出的任务');
     return;
@@ -78,20 +80,22 @@ function handleExport() {
   };
 
   const jsonStr = JSON.stringify(payload, null, 2);
-  const blob = new Blob([jsonStr], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-
   const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `easyjob-tasks-${timestamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  const filename = `easyjob-tasks-${timestamp}.json`;
 
-  message.success(`成功导出 ${selectedTasks.length} 个任务`);
-  emit('update:show', false);
+  exporting.value = true;
+  try {
+    const result = await exportTasksAndReveal(filename, jsonStr);
+    message.success(`成功导出 ${selectedTasks.length} 个任务`);
+    emit('update:show', false);
+    if (!result.revealed) {
+      message.warning(`已导出，但无法自动打开文件管理器: ${result.revealError}`);
+    }
+  } catch (e: any) {
+    message.error(`导出失败: ${e?.message || e}`);
+  } finally {
+    exporting.value = false;
+  }
 }
 </script>
 
@@ -185,7 +189,8 @@ function handleExport() {
           size="small"
           type="primary"
           class="bg-emerald-600 hover:bg-emerald-500"
-          :disabled="selectedTaskIds.length === 0"
+          :disabled="selectedTaskIds.length === 0 || exporting"
+          :loading="exporting"
           @click="handleExport"
         >
           <template #icon>

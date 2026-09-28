@@ -118,6 +118,8 @@ pub fn run() {
             save_system_settings,
             task_overview,
             reroll_trigger,
+            export_tasks_json,
+            reveal_in_file_manager,
             open_external_url,
         ])
         .build(tauri::generate_context!())
